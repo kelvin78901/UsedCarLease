@@ -110,6 +110,28 @@ the `vin;year|...` written in §4.1 — the wrong format silently returns garbag
   persistent `ALR_ADAPTERS=leasehackr,cars,swapalease,leasetrader` (marketcheck
   omitted, quota spent, preserved via source-scoped). PAID still owner-gated.
 
+**Used-car bug-fix round (P-A … P-H, one commit each):**
+- **P-A** ML scores were all 96-99: LambdaRank output clusters on homogeneous used
+  cars and linear min-max squashed the display. Fix = percentile-rank display
+  normalization (`pipeline.py`) -> 1-99 / 99 distinct; bootstrap grades by
+  value_edge (`labels.py`); `retrain.py` uses the value_edge bootstrap unless
+  outcome history covers >=40% of the snapshot (74 churn rows were inverting the
+  ranking). Live: top-decile value_edge +72% vs bottom, SHAP led by vs-market
+  edge. The top ~18 still display 99 (LambdaMART ties top-tier deals; spreading
+  further would mean dropping LambdaMART scoring, which is a hard constraint).
+- **P-C** Marketcheck `msrp` is the dealer's ≈sale-price number -> showed
+  "-126% off". Now: title `{year} {make} {model} {trim}`, msrp gated to a real
+  figure (`_valid_msrp`), used discount = (msrp-price)/msrp; sale price recovered
+  for the frozen snapshot via `price_from_monthly` (inverse amortization) in
+  `_load`; `year` is now a schema field (fresh crawls only -- the 3298 frozen
+  Marketcheck have no year).
+- **P-D** `states` is a real Stage-1 hard filter (was +8 only). **P-E** `sort`
+  (score/price/newest). **P-F** `sort=distance&near=<state>` is STATE-level
+  proximity -- the data has no dealer lat/lng (Marketcheck returns city/state
+  only), so no precise haversine. **P-G** hp=0 kept off the Pareto frontier/plot.
+- Data limits: the 3298 frozen Marketcheck predate price/year/geo; sale price is
+  reconstructed, year/precise-distance need a fresh crawl (quota resets monthly).
+
 Env knobs added: `ALR_LH_CONCURRENCY/RETRIES`, `ALR_MC_CONCURRENCY/RETRIES`,
 `ALR_VPIC_CONCURRENCY/BATCH_SIZE`, `ALR_LH_AUTODISCOVER`, `ALR_LH_MAX_PAGES`,
 `ALR_MC_ZIPS/MAKES/PRICE_BANDS/PER_QUERY_CAP`, `ALR_FEATURE_LOG_KEEP`,

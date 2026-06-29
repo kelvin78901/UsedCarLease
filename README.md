@@ -142,7 +142,7 @@ offline. Scrapers respect each site's terms — this is a personal-use system.
 | Method | Path | Notes |
 |---|---|---|
 | GET  | `/stats` | market pulse: active count, median/min effective $/mo, body mix, active ranker |
-| GET  | `/top_deals` | full 4-stage rank; query params `budget, bodies, want_awd, want_lux, min_mpm, max_months, pref_states, top_k`. **`bodies` empty = all types** (no filter); the dashboard renders one chip per real body type from `/stats.by_body`, all on by default. `max_months` defaults to 120 so financed used cars (72mo term) aren't excluded. |
+| GET  | `/top_deals` | full 4-stage rank; query params `budget, bodies, listing_type, cpo_only, want_awd, want_lux, min_mpm, max_months, states, pref_states, sort, near, top_k`. `bodies` empty = all types; `listing_type`=`all\|lease\|used`; **`states`** = hard filter (vs `pref_states` soft +8); **`sort`**=`score\|price_asc\|price_desc\|newest\|distance` (`distance` needs `near=<state>` — state-level proximity, the data has no dealer lat/lng); `max_months` defaults 120 so financed used cars aren't excluded. |
 | POST | `/recommend` | same, JSON body (`PrefBody`) |
 | GET  | `/vehicle/{vin}` | one decoded + scored listing |
 | POST | `/reload` | re-read snapshot + model from disk |
