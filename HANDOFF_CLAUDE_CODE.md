@@ -29,6 +29,27 @@ ranked by value. Nothing to babysit.
 
 ---
 
+## Iteration — states filter + swapalease details + used-car value fix
+
+- **STATES filter** is now dynamic from `/stats.by_state` (real dealer states,
+  count-desc, with counts) + a **DMV** shortcut (DC+MD+VA). No more hardcoded
+  subset that hid VA(1767)/MD(836)/DE(200)/DC. (Same mechanism as body-type chips.)
+- **swapalease detail pages**: `parse_detail()` (unit-tested offline against
+  `tests/fixtures/swapalease_i4.html`) pulls VIN / incentive / trim / year /
+  odometer / effective+actual. The adapter enriches **incrementally** (only
+  un-VIN'd listings, `ALR_SWAP_DETAIL_MAX=60`/crawl, paced) so it never re-hits all
+  525. VIN → vPIC fills hp (the 39 first-crawl details all got hp). Effective-cost
+  engine consumes the incentive: monthly=actual + seller_incentive → 570−500/10=520.
+- **Used-car value scoring fix**: old beaters used to top the board (a 2006 at
+  "91% off MSRP" + a fake 72mo $104/mo). Marketcheck has no market-price field, so
+  `features.recompute_used_market` (shared by build_features / api._load / retrain)
+  now scores used cars **vs make/body/3yr-band peers minus an age + high-mileage
+  penalty**, with an **age-realistic finance term** (used_finance_term: 72mo new →
+  24mo floor). Result: Used top-50 median year **2011 → 2024**, zero cars before
+  2012. Lease logic unchanged.
+
+---
+
 ## Latest iteration — DMV expansion (line A) + search/filter/UI (line B)
 
 **Line A (used-car volume, DMV + PA focus).**
