@@ -176,11 +176,12 @@ inside the event loop). Add `mysource` to `ALR_ADAPTERS` and it's in the next
 crawl. The same contract is why this generalizes past cars — a `zillow` or
 `ebay` adapter reuses the entire normalize → rank → serve stack.
 
-Included adapters: `leasehackr` (Discourse `.json`, real; multi-board with live
-category autodiscovery), `marketcheck` (used-car inventory API, real; concurrent
-zip/make/price sweep), `swapalease` / `leasetrader` (Playwright, unverified
-placeholders), `cars` (Playwright, optional), `seed` (deterministic offline
-generator for dev/CI).
+Included adapters: `leasehackr` (Discourse `.json`, real; private-transfers board
+by default — regional "marketplace" boards are broker ads with ~0 real transfers,
+opt in via `ALR_LH_AUTODISCOVER=1`; polite rate-limited with a deal-sheet quality
+gate), `marketcheck` (used-car inventory API, real; concurrent zip/make/price
+sweep), `swapalease` / `leasetrader` (Playwright, unverified placeholders), `cars`
+(Playwright, optional), `seed` (deterministic offline generator for dev/CI).
 
 ---
 

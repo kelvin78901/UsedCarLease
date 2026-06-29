@@ -45,8 +45,24 @@ data access, not code — see §5.
 **Doc corrections from live testing:** the vPIC batch payload is
 `VIN,year;VIN,year` (comma between VIN/year, semicolon between records), **not**
 the `vin;year|...` written in §4.1 — the wrong format silently returns garbage.
-The Leasehackr regional boards resolved live are `c/marketplace/{california/14,
-northeast/15,midwest/16,south/17,west/18}` + `c/private-transfers/12`.
+
+**Findings from a real Docker run (leasehackr + marketcheck live):**
+- Leasehackr's regional **marketplace** boards (`c/marketplace/{california/14,
+  northeast/15,midwest/16,south/17,west/18}`) are **broker/dealer ad threads —
+  ~0 real transfers.** Only `c/private-transfers/12` has genuine lease takeovers.
+  So autodiscovery is now **off by default** (set `ALR_LH_AUTODISCOVER=1` to
+  include the ad boards). The earlier "~1–2k from all boards" estimate was
+  optimistic; real Leasehackr transfer inventory ≈ the private-transfers board
+  (a few hundred). Marketcheck remains the only real volume.
+- Discourse **rate-limits hard (429)** under concurrency=5/no-delay. Defaults are
+  now polite: `ALR_LH_CONCURRENCY=2` + `ALR_LH_DELAY=0.5` (per-request sleep held
+  in the semaphore slot), and only the pages MAX_TOPICS needs are fetched. A real
+  run then took ~55s with zero 429s.
+- The body parser now **demands a real deal-sheet fingerprint** (maturity date /
+  effective miles / mileage / transfer fee / calc link) plus sane bounds
+  (monthly ∈ [50,6000], MSRP ≥ 8000, `$84k`→84000) — without it, broker ads with
+  `monthly=$1` / `MSRP=$4` ranked #1. End-to-end live in Docker now serves clean,
+  real transfers + Marketcheck inventory through the 4-stage LTR rank.
 
 Env knobs added: `ALR_LH_CONCURRENCY/RETRIES`, `ALR_MC_CONCURRENCY/RETRIES`,
 `ALR_VPIC_CONCURRENCY/BATCH_SIZE`, `ALR_LH_AUTODISCOVER`, `ALR_LH_MAX_PAGES`,

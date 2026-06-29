@@ -24,7 +24,8 @@ HTTP_TIMEOUT = float(os.getenv("ALR_HTTP_TIMEOUT", "20"))
 
 # --- concurrency (P1) -------------------------------------------------------
 # per-source in-flight request caps (politeness / rate limits) + retry attempts.
-LH_CONCURRENCY = int(os.getenv("ALR_LH_CONCURRENCY", "5"))
+LH_CONCURRENCY = int(os.getenv("ALR_LH_CONCURRENCY", "2"))   # Discourse 429s easily
+LH_DELAY = float(os.getenv("ALR_LH_DELAY", "0.5"))          # politeness sleep per request
 LH_RETRIES = int(os.getenv("ALR_LH_RETRIES", "3"))
 MC_CONCURRENCY = int(os.getenv("ALR_MC_CONCURRENCY", "3"))   # keep low: free tier
 MC_RETRIES = int(os.getenv("ALR_MC_RETRIES", "3"))

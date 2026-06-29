@@ -28,16 +28,18 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 from .base import BaseAdapter, adapter
-from ..config import LH_CONCURRENCY, LH_RETRIES
+from ..config import LH_CONCURRENCY, LH_DELAY, LH_RETRIES
 from ..schema import RawListing
 
 BASE = "https://forum.leasehackr.com"
 DEFAULT_CATEGORY = "c/private-transfers/12"
 # ALR_LH_CATEGORY: comma-separated Discourse category paths (each "c/<slug>/<id>"
-# or "c/<parent>/<slug>/<id>" for a subcategory). Unset -> private-transfers plus
-# whatever regional marketplace boards autodiscovery finds on the live site.
+# or "c/<parent>/<slug>/<id>" for a subcategory). Unset -> just private-transfers,
+# the only board with real lease *takeovers*. ALR_LH_AUTODISCOVER=1 also pulls the
+# regional "marketplace" boards, but those are broker/dealer *ad* threads and
+# yield ~0 transfers (they fail the deal-sheet gate), so it's off by default.
 _ENV_CATS = [c.strip() for c in os.getenv("ALR_LH_CATEGORY", "").split(",") if c.strip()]
-AUTODISCOVER = os.getenv("ALR_LH_AUTODISCOVER", "1") == "1"
+AUTODISCOVER = os.getenv("ALR_LH_AUTODISCOVER", "0") == "1"
 MAX_TOPICS = int(os.getenv("ALR_LH_MAX_TOPICS", "60"))   # PER category (caps bodies fetched)
 MAX_PAGES = int(os.getenv("ALR_LH_MAX_PAGES", "12"))     # PER category
 
@@ -59,9 +61,13 @@ def _num(pat, text, default=None):
     if not m:
         return default
     try:
-        return float(m.group(1).replace(",", ""))
+        val = float(m.group(1).replace(",", ""))
     except (ValueError, IndexError):
         return default
+    # "$36k" / "84k" captured as 36 / 84 -> scale to thousands
+    if val < 1000 and text[m.end():m.end() + 1].lower() == "k":
+        val *= 1000
+    return val
 
 FIELDS = {
     "msrp": r"msrp[:\s]*\$?\s*([\d,]+)",
@@ -96,6 +102,7 @@ def _clean_title(t: str) -> str:
 class LeasehackrAdapter(BaseAdapter):
     concurrency = LH_CONCURRENCY
     max_retries = LH_RETRIES
+    request_delay = LH_DELAY        # Discourse rate-limits hard; be polite
 
     async def fetch(self) -> list[RawListing]:
         cats = await self._categories()
@@ -120,9 +127,12 @@ class LeasehackrAdapter(BaseAdapter):
 
     async def _collect(self, cat: str) -> tuple[list, int]:
         """Fetch a category's pages concurrently, screen topics, and return up to
-        MAX_TOPICS (candidate, topic) pairs plus the total topics scanned."""
+        MAX_TOPICS (candidate, topic) pairs plus the total topics scanned. Only
+        fetch as many pages as MAX_TOPICS needs (~30 topics/page) rather than all
+        MAX_PAGES -- fewer requests, less rate-limit pressure."""
+        n_pages = min(MAX_PAGES, max(2, (MAX_TOPICS // 25) + 1))
         pages = await asyncio.gather(
-            *(self._category_page(cat, p) for p in range(MAX_PAGES)))
+            *(self._category_page(cat, p) for p in range(n_pages)))
         cands, seen = [], 0
         for topics in pages:
             if not topics:
@@ -247,15 +257,22 @@ class LeasehackrAdapter(BaseAdapter):
             make = self._make_from_title(title)
         model = self._model_from_title(title, make)
 
-        if not (make and vals["monthly"]):
-            return None  # not rankable; skip rather than emit garbage
+        # Quality gates. Regional marketplace boards are full of broker "specials"
+        # ad threads; demand a real lease-transfer fingerprint (deal sheet) plus
+        # plausible numbers, so $1 emoji spam / $4 MSRPs don't poison the ranking.
+        monthly = vals["monthly"]
+        msrp = vals["msrp"] if (vals["msrp"] and vals["msrp"] >= 8000) else None
+        has_dealsheet = bool(calc or md or vals["mpm"] or vals["cur_miles"]
+                             or vals["mat_miles"] or vals["transfer_fee"])
+        if not (make and monthly and 50 <= monthly <= 6000 and has_dealsheet):
+            return None  # not a real, rankable transfer
 
         return RawListing(
             source="leasehackr", source_id=str(tid), url=f"{BASE}/t/{tid}",
             title=title,
             make=make.replace("-", " ").title() if make else None,
             model=model,
-            msrp=vals["msrp"], monthly=vals["monthly"],
+            msrp=msrp, monthly=monthly,
             months_remaining=months,
             miles_per_year=int(vals["mpm"] * 12) if vals["mpm"] else None,
             remaining_miles=rem_miles,

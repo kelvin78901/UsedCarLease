@@ -62,6 +62,7 @@ class BaseAdapter(abc.ABC):
     name: str = "base"
     concurrency: int = 4          # subclasses override from config
     max_retries: int = 3
+    request_delay: float = 0.0    # politeness sleep per request (held in the slot)
 
     def __init__(self) -> None:
         # NOTHING loop-bound here: the client + semaphore are created in aopen()
@@ -99,6 +100,8 @@ class BaseAdapter(abc.ABC):
                 reraise=True):
             with attempt:
                 async with self._sem:
+                    if self.request_delay:
+                        await asyncio.sleep(self.request_delay)
                     r = await self._client.get(url, params=params)
                     r.raise_for_status()
                     return r.json()
