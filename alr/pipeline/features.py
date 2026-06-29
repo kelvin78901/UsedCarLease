@@ -34,7 +34,16 @@ def build_features(enriched: list[NormalizedListing]) -> list[EnrichedListing]:
     rows = []
     for l in enriched:
         eff = effective_monthly(l)
-        disc = round((1 - (l.monthly * l.months_remaining) / (l.msrp * 0.55)) * 100) if l.msrp else 0
+        # discount only when MSRP is a real figure (used-car msrp is junk/≈price).
+        # Used cars: true discount off MSRP = (msrp-price)/msrp. Leases: keep the
+        # lease formula (monthly*term vs msrp).
+        if l.msrp and l.msrp >= 12000:
+            if l.price > 0:
+                disc = round((l.msrp - l.price) / l.msrp * 100) if l.msrp > l.price else 0
+            else:
+                disc = round((1 - (l.monthly * l.months_remaining) / (l.msrp * 0.55)) * 100)
+        else:
+            disc = 0
         rows.append({
             "listing_key": l.listing_key, "body": l.body,
             "effective_monthly": eff, "msrp_discount_pct": disc,

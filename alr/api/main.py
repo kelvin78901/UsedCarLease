@@ -40,6 +40,18 @@ def _load():
     con = _db.connect()
     S.listings = _db.load_current(con)
     con.close()
+    # Backfill used cars crawled before the price/MSRP-gate fixes: recover the
+    # sale price from the (price-derived) monthly, and drop junk MSRP/discount.
+    from ..adapters.marketcheck import price_from_monthly, _valid_msrp
+    for l in S.listings:
+        if is_used(l):
+            if l.price <= 0 and l.monthly > 0:
+                l.price = price_from_monthly(l.monthly)
+            if _valid_msrp(l.msrp, l.price):       # real used discount off MSRP
+                l.msrp_discount_pct = round((l.msrp - l.price) / l.msrp * 100)
+            else:                                   # junk MSRP -> hide it
+                l.msrp = 0.0
+                l.msrp_discount_pct = 0.0
     S.scorer = LTRScorer.load()
 
 

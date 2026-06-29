@@ -70,6 +70,7 @@ class NormalizedListing(BaseModel):
     odometer: int = 0              # current mileage (used cars)
     price: float = 0.0             # sale price (used cars); leases use monthly/effective
     dealer_city: str = ""
+    year: int = 0                  # model year
     crawled_at: datetime = Field(default_factory=_now)
 
 

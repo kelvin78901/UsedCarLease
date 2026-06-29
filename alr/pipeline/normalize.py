@@ -61,6 +61,7 @@ def normalize(raw: RawListing) -> NormalizedListing | None:
         odometer=int(raw.raw.get("odometer") or 0),
         price=float(raw.raw.get("price") or 0.0),
         dealer_city=(raw.raw.get("city") or "")[:60],
+        year=int(raw.raw.get("year") or 0),
         crawled_at=raw.crawled_at,
     )
     # carry adapter-known build data forward for the enricher (precedence:

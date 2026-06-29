@@ -76,6 +76,26 @@ def amortized_monthly(price: float, apr: float = APR, term: int = TERM) -> float
     return round(price * r / (1 - (1 + r) ** -term))
 
 
+def price_from_monthly(monthly: float, apr: float = APR, term: int = TERM) -> float:
+    """Inverse of amortized_monthly: recover the sale price from the estimated
+    finance payment. Used to backfill `price` on snapshots crawled before the
+    price field existed (the monthly WAS derived from price)."""
+    if not monthly or monthly <= 0:
+        return 0.0
+    r = apr / 12
+    return round(monthly * (term if r == 0 else (1 - (1 + r) ** -term) / r))
+
+
+def _valid_msrp(msrp, price: float):
+    """A real MSRP is well above the sale price and not a junk small number.
+    Marketcheck often returns the dealer's number (≈ sale price) for used cars."""
+    try:
+        m = float(msrp or 0)
+    except (TypeError, ValueError):
+        return None
+    return m if (m >= 12000 and m > price * 1.05) else None
+
+
 @adapter("marketcheck")
 class MarketcheckAdapter(BaseAdapter):
     concurrency = MC_CONCURRENCY    # keep low: free tier rate limits
@@ -169,11 +189,12 @@ class MarketcheckAdapter(BaseAdapter):
             source="marketcheck",
             source_id=str(L.get("id") or L.get("vin")),
             url=L.get("vdp_url"),
-            title=L.get("heading"),
+            title=" ".join(str(x) for x in (b.get("year"), b.get("make"),
+                                            b.get("model"), b.get("trim")) if x),
             make=b.get("make"),
             model=" ".join(x for x in (b.get("model"), b.get("trim")) if x) or b.get("model"),
             vin=L.get("vin"),
-            msrp=L.get("msrp"),
+            msrp=_valid_msrp(L.get("msrp"), float(price)),  # real MSRP only, else None
             monthly=monthly,                       # ESTIMATED finance payment
             months_remaining=TERM,                 # finance term, for the cost amortization
             drive_off=0.0,
