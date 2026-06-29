@@ -37,6 +37,17 @@ for _region, _states in {
         _STATE_REGION[_s] = _region
 
 
+def _matches_q(l, q: str) -> bool:
+    """Free-text AND search over make/model/body + boolean flags + year, so
+    'mach-e', 'denali', 'awd', 'subaru wrx' all filter sensibly."""
+    if not q:
+        return True
+    hay = (f"{l.make} {l.model} {l.body} {l.year or ''} "
+           f"{'awd' if l.awd else ''} {'ev' if l.ev else ''} "
+           f"{'cpo' if l.cpo else ''} {'luxury' if l.luxury else ''}").lower()
+    return all(tok in hay for tok in q.lower().split())
+
+
 def _distance_rank(l, near: str) -> int:
     """0 = same state, 1 = same region, 2 = elsewhere. near='' -> 0 (no sort)."""
     if not near:
@@ -62,6 +73,14 @@ class Prefs:
     pref_states: set[str] = field(default_factory=set)   # SOFT: +8 personalization bonus
     sort_by: str = "score"  # score | price_asc | price_desc | newest
     near: str = ""          # reference state for sort=distance (state-level approx)
+    q: str = ""             # free-text search (AND over tokens) on make/model/body/flags
+    makes: set[str] = field(default_factory=set)         # HARD filter: only these makes
+    year_min: int = 0
+    year_max: int = 0
+    odo_max: int = 0        # max odometer (used cars)
+    price_min: float = 0.0  # used sale-price range
+    price_max: float = 0.0
+    awd_only: bool = False
     top_k: int = 100
 
 
@@ -109,6 +128,14 @@ def rank(listings: list[EnrichedListing], prefs: Prefs,
         and _type_ok(l, prefs.listing_type)
         and (not prefs.cpo_only or l.cpo)
         and (not prefs.states or l.state in prefs.states)
+        and (not prefs.makes or l.make in prefs.makes)
+        and (not prefs.awd_only or l.awd)
+        and _matches_q(l, prefs.q)
+        and (not prefs.year_min or (l.year and l.year >= prefs.year_min))
+        and (not prefs.year_max or (l.year and l.year <= prefs.year_max))
+        and (not prefs.odo_max or (l.odometer and l.odometer <= prefs.odo_max))
+        and (not prefs.price_min or l.price >= prefs.price_min)
+        and (not prefs.price_max or (l.price and l.price <= prefs.price_max))
         and l.effective_monthly <= prefs.budget
         and l.miles_per_month >= prefs.min_mpm
         and l.months_remaining <= prefs.max_months

@@ -116,14 +116,19 @@ def stats():
         return {"active": 0}
     effs = [l.effective_monthly for l in S.listings]
     bodies: dict[str, int] = {}
+    makes: dict[str, int] = {}
     for l in S.listings:
         bodies[l.body] = bodies.get(l.body, 0) + 1
+        makes[l.make] = makes.get(l.make, 0) + 1
     used = [l for l in S.listings if is_used(l)]
+    years = [l.year for l in used if l.year > 0]
     return {
         "active": len(S.listings),
         "median_effective": median(effs),
         "min_effective": min(effs),
         "by_body": bodies,
+        "by_make": dict(sorted(makes.items(), key=lambda kv: -kv[1])),
+        "year_range": [min(years), max(years)] if years else [0, 0],
         "by_type": {"used": len(used), "lease": len(S.listings) - len(used)},
         "used_cpo": sum(1 for l in used if l.cpo),
         "ranker": "ltr" if S.scorer else "rules",
@@ -143,6 +148,14 @@ class PrefBody(BaseModel):
     pref_states: list[str] = []     # soft +8 bonus
     sort: str = "score"             # score | price_asc | price_desc | newest | distance
     near: str = ""                  # reference state for sort=distance
+    q: str = ""                     # free-text search
+    makes: list[str] = []           # hard filter: only these makes
+    year_min: int = 0
+    year_max: int = 0
+    odo_max: int = 0
+    price_min: float = 0
+    price_max: float = 0
+    awd_only: bool = False
     top_k: int = 100
 
 
@@ -166,6 +179,14 @@ def top_deals(
     pref_states: str = Query(""),      # soft +8 bonus
     sort: str = Query("score"),        # score|price_asc|price_desc|newest|distance
     near: str = Query(""),             # reference state for sort=distance
+    q: str = Query(""),                # free-text search
+    makes: str = Query(""),            # hard filter: only these makes
+    year_min: int = Query(0),
+    year_max: int = Query(0),
+    odo_max: int = Query(0),
+    price_min: float = Query(0),
+    price_max: float = Query(0),
+    awd_only: bool = Query(False),
     top_k: int = Query(100),
 ):
     p = Prefs(
@@ -177,6 +198,9 @@ def top_deals(
         states=set(s for s in states.split(",") if s),
         pref_states=set(s for s in pref_states.split(",") if s),
         sort_by=sort, near=near,
+        q=q, makes=set(m for m in makes.split(",") if m),
+        year_min=year_min, year_max=year_max, odo_max=odo_max,
+        price_min=price_min, price_max=price_max, awd_only=awd_only,
         top_k=top_k,
     )
     return _do_rank(p)
@@ -190,6 +214,9 @@ def recommend(body: PrefBody):
         want_awd=body.want_awd, want_lux=body.want_lux, min_mpm=body.min_mpm,
         max_months=body.max_months, states=set(body.states),
         pref_states=set(body.pref_states), sort_by=body.sort, near=body.near,
+        q=body.q, makes=set(body.makes), year_min=body.year_min,
+        year_max=body.year_max, odo_max=body.odo_max, price_min=body.price_min,
+        price_max=body.price_max, awd_only=body.awd_only,
         top_k=body.top_k,
     )
     return _do_rank(p)
