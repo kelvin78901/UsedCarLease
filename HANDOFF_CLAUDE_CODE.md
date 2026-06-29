@@ -80,6 +80,12 @@ the `vin;year|...` written in §4.1 — the wrong format silently returns garbag
   ~3.3k is now **served live** (`/stats active≈3305`); compose runs leasehackr-only
   for the burn month so source-scoped preserves it. Restore `leasehackr,marketcheck`
   next month / on Standard. Owner declined paid (Standard/proxies) for now.
+- **UI/filter fix:** Stage 1 was hiding ~all of the swept inventory two ways — the
+  dashboard hardcoded only 3 body chips (SUV/Sedan/EV) and `Prefs.max_months=48`
+  excluded every financed used car (72mo term). Now: body chips render
+  **dynamically from `/stats.by_body`** (all on by default; empty `bodies` = no
+  filter) and `max_months` defaults to 120. Result: default dashboard
+  `FILTERED 7 → 3124`, "Ranked deals" 7 → 100, Pickup/Wagon/Van/etc. now visible.
 
 Env knobs added: `ALR_LH_CONCURRENCY/RETRIES`, `ALR_MC_CONCURRENCY/RETRIES`,
 `ALR_VPIC_CONCURRENCY/BATCH_SIZE`, `ALR_LH_AUTODISCOVER`, `ALR_LH_MAX_PAGES`,

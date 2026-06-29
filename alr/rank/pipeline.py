@@ -19,11 +19,11 @@ from . import rules
 @dataclass
 class Prefs:
     budget: float = 1400
-    bodies: set[str] = field(default_factory=lambda: {"SUV", "Sedan", "EV", "Coupe", "Truck", "Unknown"})
+    bodies: set[str] = field(default_factory=set)  # empty = no body filter (all types)
     want_awd: bool = False
     want_lux: bool = False
     min_mpm: int = 0
-    max_months: int = 48
+    max_months: int = 120   # inclusive by default: financed used cars carry a 72mo term
     pref_states: set[str] = field(default_factory=set)
     top_k: int = 100
 
@@ -56,10 +56,11 @@ def rank(listings: list[EnrichedListing], prefs: Prefs,
          ltr_scorer=None) -> RankResult:
     total = len(listings)
 
-    # Stage 1 - hard filter
+    # Stage 1 - hard filter. Empty bodies set = no body filter (show all types),
+    # so listings whose body has no UI chip (Pickup/Wagon/Van/...) aren't dropped.
     filtered = [
         l for l in listings
-        if l.body in prefs.bodies
+        if (not prefs.bodies or l.body in prefs.bodies)
         and l.effective_monthly <= prefs.budget
         and l.miles_per_month >= prefs.min_mpm
         and l.months_remaining <= prefs.max_months

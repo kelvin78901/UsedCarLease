@@ -190,7 +190,7 @@ function Stage({i,t,n,col}){
 
 function Dashboard(){
   const [budget,setBudget]=useState(900);
-  const [bodies,setBodies]=useState({SUV:true,Sedan:true,EV:true});
+  const [bodies,setBodies]=useState(null);   // null until /stats tells us the real types
   const [wantAwd,setAwd]=useState(false);
   const [wantLux,setLux]=useState(false);
   const [prefStates,setStates]=useState({});
@@ -199,11 +199,18 @@ function Dashboard(){
   const [sel,setSel]=useState(null);
   const [err,setErr]=useState(null);
 
-  useEffect(()=>{fetch(API+"/stats").then(r=>r.json()).then(setStats).catch(()=>{});},[]);
+  useEffect(()=>{fetch(API+"/stats").then(r=>r.json()).then(s=>{
+    setStats(s);
+    // seed the body filter from the REAL types in the data, all selected by default
+    setBodies(prev=>prev||Object.fromEntries(Object.keys(s.by_body||{}).map(k=>[k,true])));
+  }).catch(()=>{});},[]);
   useEffect(()=>{
-    const b=Object.keys(bodies).filter(k=>bodies[k]).join(",");
+    const keys=bodies?Object.keys(bodies):[];
+    const sel=keys.filter(k=>bodies[k]);
+    // send a body filter only for a proper subset; all (or none) selected => empty => no filter
+    const b=(keys.length && sel.length>0 && sel.length<keys.length)?encodeURIComponent(sel.join(",")):"";
     const ps=Object.keys(prefStates).filter(k=>prefStates[k]).join(",");
-    const q=`budget=${budget}&bodies=${b}&want_awd=${wantAwd}&want_lux=${wantLux}&pref_states=${ps}&top_k=40`;
+    const q=`budget=${budget}&bodies=${b}&want_awd=${wantAwd}&want_lux=${wantLux}&pref_states=${ps}&top_k=100`;
     fetch(API+"/top_deals?"+q).then(r=>r.json()).then(d=>{setData(d);setErr(null);})
       .catch(()=>setErr("API not reachable. Start it: uvicorn alr.api.main:app"));
   },[budget,bodies,wantAwd,wantLux,prefStates]);
@@ -236,9 +243,16 @@ function Dashboard(){
         <div className="fm" style={{color:"var(--amber)",fontSize:22,fontWeight:600}}>{fmt$(budget)}</div>
         <input type="range" min="350" max="1400" step="25" value={budget}
           onChange={e=>setBudget(+e.target.value)} style={{width:"100%",marginTop:6}}/>
-        <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",marginTop:18,letterSpacing:".04em"}}>Body type</div>
-        <div style={{display:"flex",gap:6,marginTop:8}}>
-          {["SUV","Sedan","EV"].map(b=><Chip key={b} on={bodies[b]} onClick={()=>setBodies(s=>({...s,[b]:!s[b]}))}>{b}</Chip>)}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginTop:18}}>
+          <span style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",letterSpacing:".04em"}}>Body type</span>
+          <span className="lnk fm" style={{fontSize:10,cursor:"pointer"}}
+            onClick={()=>setBodies(s=>Object.fromEntries(Object.keys(s||{}).map(k=>[k,true])))}>all</span>
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:8}}>
+          {stats.by_body ? Object.keys(stats.by_body).sort((a,b)=>stats.by_body[b]-stats.by_body[a]).map(b=>
+            <Chip key={b} sm on={!!(bodies&&bodies[b])} onClick={()=>setBodies(s=>({...s,[b]:!(s&&s[b])}))}>
+              {b} <span style={{opacity:.55}}>{stats.by_body[b]}</span></Chip>)
+            : <span style={{color:"var(--dim)",fontSize:11}}>loading…</span>}
         </div>
         <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",marginTop:18,letterSpacing:".04em"}}>Boost</div>
         <div style={{display:"flex",gap:6,marginTop:8}}>

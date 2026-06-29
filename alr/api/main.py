@@ -117,11 +117,11 @@ def stats():
 
 class PrefBody(BaseModel):
     budget: float = 1400
-    bodies: list[str] = ["SUV", "Sedan", "EV"]
+    bodies: list[str] = []          # empty = all body types (no filter)
     want_awd: bool = False
     want_lux: bool = False
     min_mpm: int = 0
-    max_months: int = 48
+    max_months: int = 120
     pref_states: list[str] = []
     top_k: int = 100
 
@@ -135,17 +135,19 @@ def _do_rank(p: Prefs):
 @app.get("/top_deals")
 def top_deals(
     budget: float = Query(1400),
-    bodies: str = Query("SUV,Sedan,EV"),
+    bodies: str = Query(""),           # empty = all body types (no filter)
     want_awd: bool = Query(False),
     want_lux: bool = Query(False),
     min_mpm: int = Query(0),
+    max_months: int = Query(120),
     pref_states: str = Query(""),
     top_k: int = Query(100),
 ):
     p = Prefs(
         budget=budget,
-        bodies=set(b for b in bodies.split(",") if b) | {"Unknown"},
+        bodies=set(b for b in bodies.split(",") if b),
         want_awd=want_awd, want_lux=want_lux, min_mpm=min_mpm,
+        max_months=max_months,
         pref_states=set(s for s in pref_states.split(",") if s),
         top_k=top_k,
     )
@@ -155,7 +157,7 @@ def top_deals(
 @app.post("/recommend")
 def recommend(body: PrefBody):
     p = Prefs(
-        budget=body.budget, bodies=set(body.bodies) | {"Unknown"},
+        budget=body.budget, bodies=set(body.bodies),
         want_awd=body.want_awd, want_lux=body.want_lux, min_mpm=body.min_mpm,
         max_months=body.max_months, pref_states=set(body.pref_states),
         top_k=body.top_k,

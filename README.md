@@ -130,10 +130,10 @@ uvicorn alr.api.main:app --port 8000                                 # → make 
 docker compose up --build   # seeds + trains on first boot, serves on :8000
 ```
 
-It runs the offline `seed` adapter by default. For live data, set
-`ALR_ADAPTERS=leasehackr,swapalease,leasetrader` in `docker-compose.yml`
-(scrapers need outbound network and respect each site's terms — this is a
-personal-use system).
+It crawls **live by default** (`leasehackr,marketcheck`; put your Marketcheck key
+in a gitignored `.env`) — an initial crawl runs on boot, then every
+`ALR_CRAWL_INTERVAL_MIN`, retraining daily. Set `ALR_ADAPTERS=seed` for pure
+offline. Scrapers respect each site's terms — this is a personal-use system.
 
 ---
 
@@ -142,7 +142,7 @@ personal-use system).
 | Method | Path | Notes |
 |---|---|---|
 | GET  | `/stats` | market pulse: active count, median/min effective $/mo, body mix, active ranker |
-| GET  | `/top_deals` | full 4-stage rank; query params `budget, bodies, want_awd, want_lux, min_mpm, pref_states, top_k` |
+| GET  | `/top_deals` | full 4-stage rank; query params `budget, bodies, want_awd, want_lux, min_mpm, max_months, pref_states, top_k`. **`bodies` empty = all types** (no filter); the dashboard renders one chip per real body type from `/stats.by_body`, all on by default. `max_months` defaults to 120 so financed used cars (72mo term) aren't excluded. |
 | POST | `/recommend` | same, JSON body (`PrefBody`) |
 | GET  | `/vehicle/{vin}` | one decoded + scored listing |
 | POST | `/reload` | re-read snapshot + model from disk |
