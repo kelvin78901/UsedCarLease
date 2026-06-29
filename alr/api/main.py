@@ -117,9 +117,13 @@ def stats():
     effs = [l.effective_monthly for l in S.listings]
     bodies: dict[str, int] = {}
     makes: dict[str, int] = {}
+    states: dict[str, int] = {}
     for l in S.listings:
         bodies[l.body] = bodies.get(l.body, 0) + 1
         makes[l.make] = makes.get(l.make, 0) + 1
+        st = (l.state or "").upper()
+        if st and st != "NA":                 # skip unknown-state listings
+            states[st] = states.get(st, 0) + 1
     used = [l for l in S.listings if is_used(l)]
     years = [l.year for l in used if l.year > 0]
     return {
@@ -128,6 +132,7 @@ def stats():
         "min_effective": min(effs),
         "by_body": bodies,
         "by_make": dict(sorted(makes.items(), key=lambda kv: -kv[1])),
+        "by_state": dict(sorted(states.items(), key=lambda kv: -kv[1])),
         "year_range": [min(years), max(years)] if years else [0, 0],
         "by_type": {"used": len(used), "lease": len(S.listings) - len(used)},
         "used_cpo": sum(1 for l in used if l.cpo),

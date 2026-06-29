@@ -357,12 +357,22 @@ function Dashboard(){
         </div>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginTop:18}}>
           <span style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",letterSpacing:".04em"}}>States · show only</span>
-          {Object.values(prefStates).some(Boolean) && <span className="lnk fm" style={{fontSize:10,cursor:"pointer"}}
-            onClick={()=>setStates({})}>clear</span>}
+          <span>
+            <span className="lnk fm" style={{fontSize:10,cursor:"pointer",marginRight:8}}
+              onClick={()=>setStates(p=>({...p,DC:true,MD:true,VA:true}))}>DMV</span>
+            {Object.values(prefStates).some(Boolean) && <span className="lnk fm" style={{fontSize:10,cursor:"pointer"}}
+              onClick={()=>setStates({})}>clear</span>}
+          </span>
         </div>
         <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:8}}>
-          {["CA","NY","NJ","TX","WA","MA","FL","IL","IN","GA","CO","OH"].map(s=>
-            <Chip key={s} sm on={prefStates[s]} onClick={()=>setStates(p=>({...p,[s]:!p[s]}))}>{s}</Chip>)}
+          {(()=>{ const sk=Object.keys(stats.by_state||{});  // dynamic: real dealer states, count-desc
+            if(!sk.length) return <span style={{color:"var(--dim)",fontSize:11}}>loading…</span>;
+            const shown=moreBody?sk:sk.slice(0,14);
+            return <>{shown.map(s=>
+              <Chip key={s} sm on={!!prefStates[s]} onClick={()=>setStates(p=>({...p,[s]:!p[s]}))}>
+                {s} <span style={{opacity:.55}}>{stats.by_state[s]}</span></Chip>)}
+              {sk.length>14 && <Chip sm on={false} onClick={()=>setMoreBody(v=>!v)}>{moreBody?"− less":`+${sk.length-14}`}</Chip>}</>;
+          })()}
         </div>
       </div>
 
