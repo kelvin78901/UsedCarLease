@@ -19,7 +19,7 @@ import asyncio
 import os
 import re
 
-from .base import BaseAdapter, adapter, BROWSER_LOCK
+from .base import BaseAdapter, adapter, BROWSER_LOCK, fetch_via_subprocess
 from ..schema import RawListing
 
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -65,7 +65,7 @@ class SwapaleaseAdapter(BaseAdapter):
         "Acura,Infiniti,Mazda,Genesis,Land-Rover").split(",") if m.strip()]
 
     async def fetch(self) -> list[RawListing]:
-        return await asyncio.to_thread(self._fetch_blocking)
+        return await fetch_via_subprocess(self.name)
 
     def _fetch_blocking(self) -> list[RawListing]:
         try:
@@ -136,7 +136,7 @@ class LeaseTraderAdapter(BaseAdapter):
     LIST_URL = "https://www.leasetrader.com/search-results"
 
     async def fetch(self) -> list[RawListing]:
-        return await asyncio.to_thread(self._fetch_blocking)
+        return await fetch_via_subprocess(self.name)
 
     def _fetch_blocking(self) -> list[RawListing]:
         try:

@@ -17,7 +17,7 @@ import json
 import os
 import re
 
-from .base import BaseAdapter, adapter, BROWSER_LOCK
+from .base import BaseAdapter, adapter, BROWSER_LOCK, fetch_via_subprocess
 from .marketcheck import amortized_monthly, TERM
 from ..schema import RawListing
 from ..seed import generate as _seed_generate
@@ -48,7 +48,7 @@ class CarsAdapter(BaseAdapter):
     payload's `cpoIndicator` / `banners.cpo`."""
 
     async def fetch(self) -> list[RawListing]:
-        return await asyncio.to_thread(self._fetch_blocking)
+        return await fetch_via_subprocess(self.name)
 
     def _fetch_blocking(self) -> list[RawListing]:
         try:

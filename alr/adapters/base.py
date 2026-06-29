@@ -30,6 +30,55 @@ REGISTRY: dict[str, type["BaseAdapter"]] = {}
 # to_thread worker threads; only the browser work itself queues on this lock.
 BROWSER_LOCK = threading.Lock()
 
+# Playwright adapters run their scrape in an isolated subprocess (one browser
+# lifecycle per process — reliable in-container), serialized so only one browser
+# runs at a time.
+import json as _json          # noqa: E402
+import os as _os               # noqa: E402
+import subprocess as _subprocess  # noqa: E402
+import sys as _sys             # noqa: E402
+import tempfile as _tempfile   # noqa: E402
+_PW_SUBPROC_LOCK = asyncio.Lock()
+
+
+def _run_pw_blocking(name: str, timeout: float):
+    """Blocking: run the runner in its own process, output to a temp file, return
+    its bytes (or None on timeout). subprocess.run reaps via os.waitpid (asyncio's
+    child watcher hangs here), and a FILE (not a pipe) avoids the EOF-hang from a
+    lingering chromium child holding the stdout fd."""
+    fd, path = _tempfile.mkstemp(prefix=f"pw_{name}_", suffix=".json")
+    _os.close(fd)
+    try:
+        with open(path, "wb") as outf:
+            _subprocess.run([_sys.executable, "-m", "alr.adapters._pw_runner", name],
+                            stdout=outf, timeout=timeout)   # stderr inherits -> logs
+        with open(path, "rb") as f:
+            return f.read()
+    except _subprocess.TimeoutExpired:
+        return None
+    finally:
+        try:
+            _os.unlink(path)
+        except OSError:
+            pass
+
+
+async def fetch_via_subprocess(name: str, timeout: float = 200.0) -> list[RawListing]:
+    """Run a Playwright adapter's scrape in an isolated subprocess (one browser
+    lifecycle per process — reliable in-container), serialized so only one runs.
+    The hard timeout means a slow/blocked site emits 0 instead of hanging the crawl."""
+    async with _PW_SUBPROC_LOCK:
+        out = await asyncio.to_thread(_run_pw_blocking, name, timeout)
+    if out is None:
+        print(f"[{name}] browser subprocess timed out (>{timeout:.0f}s) -> emit 0")
+        return []
+    try:
+        data = _json.loads(out.decode() or "[]")
+    except Exception as e:
+        print(f"[{name}] browser subprocess output unparseable: {e}")
+        return []
+    return [RawListing.model_validate(d) for d in data]
+
 # Realistic browser headers - many sites WAF-block non-browser UAs with a 403 on
 # the first request. Sites behind a JS challenge still need a Playwright adapter.
 # Accept-Encoding stays "gzip, deflate" ON PURPOSE: httpx would otherwise
