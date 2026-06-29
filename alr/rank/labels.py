@@ -86,11 +86,16 @@ def labels_from_history(con, min_rows: int = LTR_MIN_HISTORY_ROWS):
     present: dict[int, set] = defaultdict(set)
     feat_at: dict[tuple, str] = {}
     seen_at: dict[str, list] = defaultdict(list)
+    src_of: dict[str, str] = {}
+    crawled_src: dict[int, set] = defaultdict(set)   # sources active per crawl
     for ts, key, data in rows:
         ci = idx[ts]
         present[ci].add(key)
         feat_at[(ci, key)] = data
         seen_at[key].append(ci)
+        src = src_of.get(key) or json.loads(data).get("source")
+        src_of[key] = src
+        crawled_src[ci].add(src)
     last_seen = {k: max(v) for k, v in seen_at.items()}
     first_seen = {k: min(v) for k, v in seen_at.items()}
 
@@ -99,10 +104,15 @@ def labels_from_history(con, min_rows: int = LTR_MIN_HISTORY_ROWS):
         examples = []
         for key in present[ci]:
             ls = last_seen[key]
-            if ls < last_i:                  # disappeared within window => sold
+            # "disappeared" only counts as SOLD if the listing's source was
+            # actually re-crawled afterwards; a source that stopped crawling
+            # (e.g. quota-exhausted Marketcheck) just leaves censored rows.
+            src = src_of[key]
+            source_recrawled = any(src in crawled_src[j] for j in range(ls + 1, last_i + 1))
+            if ls < last_i and source_recrawled:     # gone while source still crawled => sold
                 gap = ls - ci                # extra crawls it survived after ci
                 grade = 4 if gap <= 0 else 3 if gap == 1 else 2 if gap == 2 else 1
-            else:                            # still listed at the latest crawl
+            elif ls >= last_i:               # still listed at the latest crawl
                 alive = last_i - first_seen[key] + 1
                 if alive >= 6:
                     grade = 0                # stale
@@ -110,6 +120,8 @@ def labels_from_history(con, min_rows: int = LTR_MIN_HISTORY_ROWS):
                     grade = 1                # slow mover
                 else:
                     continue                 # censored: too fresh to judge
+            else:
+                continue                     # source stopped crawling -> censored
             examples.append((key, grade))
         # LambdaRank needs >=2 docs and >=2 distinct grades per query to learn
         if len(examples) >= 2 and len({g for _, g in examples}) >= 2:

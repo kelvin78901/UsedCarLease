@@ -43,11 +43,23 @@ def connect() -> duckdb.DuckDBPyConnection:
 
 
 def save_snapshot(con: duckdb.DuckDBPyConnection, listings: list[EnrichedListing]) -> None:
+    if not listings:
+        return  # a fully-failed crawl shouldn't wipe the last good snapshot
     ts = datetime.now(timezone.utc)
-    con.execute("DELETE FROM current")
+    # Source-scoped replace: only swap out the sources this crawl actually
+    # returned, so a quota-exhausted source (e.g. Marketcheck after a Free full
+    # sweep, now returning 0) keeps its last listings instead of being wiped by a
+    # leasehackr-only crawl. A real crawl also purges leftover `seed` rows.
+    sources = {l.source for l in listings}
+    delete_sources = set(sources)
+    if "seed" not in sources:
+        delete_sources.add("seed")
     cur_rows = [(l.listing_key, l.body, l.effective_monthly,
                  json.dumps(l.model_dump(), default=str)) for l in listings]
-    con.executemany("INSERT INTO current VALUES (?, ?, ?, ?)", cur_rows)
+    ph = ",".join("?" * len(delete_sources))
+    con.execute(f"DELETE FROM current WHERE json_extract_string(data, '$.source') "
+                f"IN ({ph})", list(delete_sources))
+    con.executemany("INSERT OR REPLACE INTO current VALUES (?, ?, ?, ?)", cur_rows)
     hist_rows = [(ts, l.listing_key, l.effective_monthly, l.days_on_market,
                   l.price_drops, l.favorites) for l in listings]
     con.executemany("INSERT INTO history VALUES (?, ?, ?, ?, ?, ?)", hist_rows)
