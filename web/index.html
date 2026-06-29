@@ -26,6 +26,10 @@
   .dot{animation:pulse 2s ease-in-out infinite}
   .lnk{color:var(--teal);text-decoration:none}
   .lnk:hover{text-decoration:underline}
+  .layout{display:grid;grid-template-columns:236px 1fr 392px}
+  /* narrow screens: drop the right (detail/Pareto) column, then stack the rail */
+  @media(max-width:1180px){.layout{grid-template-columns:220px 1fr}}
+  @media(max-width:760px){.layout{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -208,6 +212,12 @@ function Chip({on,onClick,children,sm}){
     color:on?"var(--ink)":"var(--mid)",background:on?"var(--amber)":"transparent",fontWeight:on?600:400}}>
     {children}</button>;
 }
+function Label2({t,r,on,clear}){   // section label + current value (+ clear when active)
+  return <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginTop:14}}>
+    <span style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",letterSpacing:".04em"}}>{t}</span>
+    <span className="fm" style={{fontSize:10.5,color:on?"var(--amber)":"var(--dim)",cursor:on?"pointer":"default"}}
+      onClick={on?clear:undefined}>{r}{on?"  ✕":""}</span></div>;
+}
 function Stage({i,t,n,col}){
   return <div style={{flex:1,background:"var(--panel)",border:"1px solid var(--line)",borderRadius:9,padding:"9px 12px"}}>
     <div style={{color:"var(--dim)",fontSize:9.5,letterSpacing:".06em"}} className="fm">{"S"+i+" · "+t}</div>
@@ -223,6 +233,13 @@ function Dashboard(){
   const [wantLux,setLux]=useState(false);
   const [prefStates,setStates]=useState({});
   const [sort,setSort]=useState("score");
+  const [q,setQ]=useState("");                 // B1 free-text search
+  const [makes,setMakes]=useState({});         // B2 make multi-select
+  const [yearMin,setYearMin]=useState(0);
+  const [odoMax,setOdoMax]=useState(0);
+  const [priceMax,setPriceMax]=useState(0);
+  const [awdOnly,setAwdOnly]=useState(false);
+  const [moreBody,setMoreBody]=useState(false); // B3 body-chip collapse
   const [data,setData]=useState({deals:[],counts:{}});
   const [stats,setStats]=useState({});
   const [sel,setSel]=useState(null);
@@ -235,17 +252,24 @@ function Dashboard(){
   }).catch(()=>{});},[]);
   useEffect(()=>{
     const keys=bodies?Object.keys(bodies):[];
-    const sel=keys.filter(k=>bodies[k]);
+    const selB=keys.filter(k=>bodies[k]);
     // send a body filter only for a proper subset; all (or none) selected => empty => no filter
-    const b=(keys.length && sel.length>0 && sel.length<keys.length)?encodeURIComponent(sel.join(",")):"";
+    const b=(keys.length && selB.length>0 && selB.length<keys.length)?encodeURIComponent(selB.join(",")):"";
     const ps=Object.keys(prefStates).filter(k=>prefStates[k]).join(",");  // hard state filter
+    const mk=Object.keys(makes).filter(k=>makes[k]).join(",");
     const cpo=(tab==="used"&&cpoOnly);
-    const q=`budget=${budget}&bodies=${b}&listing_type=${tab}&cpo_only=${cpo}`
-          +`&want_awd=${wantAwd}&want_lux=${wantLux}&states=${ps}&sort=${sort}`
+    // year/mileage/price filters are used-car concepts -> only sent on the Used tab
+    const usedF=(tab==="used")?`&year_min=${yearMin}&odo_max=${odoMax}&price_max=${priceMax}`:"";
+    const qs=`budget=${budget}&bodies=${b}&listing_type=${tab}&cpo_only=${cpo}`
+          +`&want_awd=${wantAwd}&want_lux=${wantLux}&awd_only=${awdOnly}&states=${ps}`
+          +`&makes=${encodeURIComponent(mk)}&q=${encodeURIComponent(q)}&sort=${sort}${usedF}`
           +`${sort==="distance"&&ps?"&near="+ps.split(",")[0]:""}&top_k=100`;
-    fetch(API+"/top_deals?"+q).then(r=>r.json()).then(d=>{setData(d);setErr(null);})
-      .catch(()=>setErr("API not reachable. Start it: uvicorn alr.api.main:app"));
-  },[budget,bodies,tab,cpoOnly,wantAwd,wantLux,prefStates,sort]);
+    const t=setTimeout(()=>{
+      fetch(API+"/top_deals?"+qs).then(r=>r.json()).then(d=>{setData(d);setErr(null);})
+        .catch(()=>setErr("API not reachable. Start it: uvicorn alr.api.main:app"));
+    },250);   // debounce so typing in search doesn't fire a request per keystroke
+    return ()=>clearTimeout(t);
+  },[budget,bodies,tab,cpoOnly,wantAwd,wantLux,awdOnly,prefStates,makes,q,yearMin,odoMax,priceMax,sort]);
 
   const deals=data.deals||[];
   const selected = sel ? deals.find(d=>d.listing_key===sel)||deals[0] : deals[0];
@@ -275,7 +299,7 @@ function Dashboard(){
       </div>
     </div>
 
-    <div style={{display:"grid",gridTemplateColumns:"236px 1fr 392px"}}>
+    <div className="layout">
       <div style={{borderRight:"1px solid var(--line)",padding:16,minHeight:"calc(100vh - 53px)"}}>
         <div className="fd" style={{fontWeight:600,fontSize:12,marginBottom:4}}>Re-rank for me</div>
         <div style={{color:"var(--dim)",fontSize:11,marginBottom:16}}>Every change recomputes the pipeline server-side.</div>
@@ -289,19 +313,44 @@ function Dashboard(){
             onClick={()=>setBodies(s=>Object.fromEntries(Object.keys(s||{}).map(k=>[k,true])))}>all</span>
         </div>
         <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:8}}>
-          {stats.by_body ? Object.keys(stats.by_body).sort((a,b)=>stats.by_body[b]-stats.by_body[a]).map(b=>
-            <Chip key={b} sm on={!!(bodies&&bodies[b])} onClick={()=>setBodies(s=>({...s,[b]:!(s&&s[b])}))}>
-              {b} <span style={{opacity:.55}}>{stats.by_body[b]}</span></Chip>)
-            : <span style={{color:"var(--dim)",fontSize:11}}>loading…</span>}
+          {(()=>{ const bk=Object.keys(stats.by_body||{}).sort((a,b)=>stats.by_body[b]-stats.by_body[a]);
+            if(!bk.length) return <span style={{color:"var(--dim)",fontSize:11}}>loading…</span>;
+            const shown=moreBody?bk:bk.slice(0,6);
+            return <>{shown.map(b=>
+              <Chip key={b} sm on={!!(bodies&&bodies[b])} onClick={()=>setBodies(s=>({...s,[b]:!(s&&s[b])}))}>
+                {b} <span style={{opacity:.55}}>{stats.by_body[b]}</span></Chip>)}
+              {bk.length>6 && <Chip sm on={false} onClick={()=>setMoreBody(v=>!v)}>
+                {moreBody?"− less":`+${bk.length-6} more`}</Chip>}</>;
+          })()}
         </div>
         {tab==="used" && <>
-          <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",marginTop:18,letterSpacing:".04em"}}>Certified (CPO)</div>
-          <div style={{display:"flex",gap:6,marginTop:8}}>
-            <Chip on={cpoOnly} onClick={()=>setCpo(v=>!v)}>
-              CPO only{stats.used_cpo!=null?` · ${stats.used_cpo}`:""}</Chip>
+          <Label2 t="Year" r={yearMin?`≥ ${yearMin}`:"any"} on={!!yearMin} clear={()=>setYearMin(0)}/>
+          <input type="range" min={(stats.year_range||[2000])[0]} max={(stats.year_range||[0,2025])[1]} step="1"
+            value={yearMin||(stats.year_range||[2000])[0]} onChange={e=>setYearMin(+e.target.value)} style={{width:"100%"}}/>
+          <Label2 t="Max mileage" r={odoMax?`≤ ${(odoMax/1000)}k mi`:"any"} on={!!odoMax} clear={()=>setOdoMax(0)}/>
+          <input type="range" min="0" max="150000" step="5000"
+            value={odoMax} onChange={e=>setOdoMax(+e.target.value)} style={{width:"100%"}}/>
+          <Label2 t="Max price" r={priceMax?fmt$(priceMax):"any"} on={!!priceMax} clear={()=>setPriceMax(0)}/>
+          <input type="range" min="0" max="120000" step="2500"
+            value={priceMax} onChange={e=>setPriceMax(+e.target.value)} style={{width:"100%"}}/>
+          <div style={{display:"flex",gap:6,marginTop:10}}>
+            <Chip on={cpoOnly} onClick={()=>setCpo(v=>!v)}>CPO only{stats.used_cpo!=null?` · ${stats.used_cpo}`:""}</Chip>
+            <Chip on={awdOnly} onClick={()=>setAwdOnly(v=>!v)}>AWD only</Chip>
           </div>
         </>}
-        <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",marginTop:18,letterSpacing:".04em"}}>Boost</div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginTop:18}}>
+          <span style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",letterSpacing:".04em"}}>Make</span>
+          {Object.values(makes).some(Boolean) && <span className="lnk fm" style={{fontSize:10,cursor:"pointer"}}
+            onClick={()=>setMakes({})}>clear</span>}
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:8}}>
+          {(()=>{ const mk=Object.keys(stats.by_make||{}); const shown=moreBody?mk:mk.slice(0,10);
+            return <>{shown.map(m=>
+              <Chip key={m} sm on={!!makes[m]} onClick={()=>setMakes(p=>({...p,[m]:!p[m]}))}>{m}</Chip>)}
+              {mk.length>10 && <Chip sm on={false} onClick={()=>setMoreBody(v=>!v)}>{moreBody?"− less":`+${mk.length-10}`}</Chip>}</>;
+          })()}
+        </div>
+        <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",marginTop:18,letterSpacing:".04em"}}>Boost (personalization)</div>
         <div style={{display:"flex",gap:6,marginTop:8}}>
           <Chip on={wantAwd} onClick={()=>setAwd(v=>!v)}>AWD +7</Chip>
           <Chip on={wantLux} onClick={()=>setLux(v=>!v)}>Luxury +6</Chip>
@@ -329,7 +378,13 @@ function Dashboard(){
         </div>
         {err && <div style={{color:"var(--red)",fontSize:12,marginTop:14,border:"1px dashed var(--line)",
           borderRadius:8,padding:12}}>{err}</div>}
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",margin:"16px 4px 8px"}}>
+        <div style={{display:"flex",gap:8,alignItems:"center",marginTop:14}}>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search make / model / trim — e.g. mach-e, denali, awd"
+            className="fm" style={{flex:1,minWidth:0,background:"var(--panel)",color:"var(--hi)",
+            border:"1px solid var(--line)",borderRadius:8,fontSize:12.5,padding:"8px 11px"}}/>
+          {q && <span className="lnk fm" style={{fontSize:11,cursor:"pointer"}} onClick={()=>setQ("")}>clear</span>}
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",margin:"12px 4px 8px"}}>
           <div className="fd" style={{fontWeight:600,fontSize:14}}>Ranked deals
             <span style={{color:"var(--dim)",fontWeight:400}}> · {deals.length}</span></div>
           <select value={sort} onChange={e=>setSort(e.target.value)} className="fm" style={{background:"var(--panel)",
