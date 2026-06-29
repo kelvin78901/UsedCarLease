@@ -63,7 +63,8 @@ function Drivers({drivers}){
 
 function Scatter({deals,selected}){
   const W=360,H=190,pad={l:40,r:12,t:12,b:28};
-  if(!deals.length) return <div style={{color:"var(--dim)",fontSize:12,padding:20}}>No deals to plot.</div>;
+  deals=(deals||[]).filter(d=>d.hp>0);   // hp=0 = missing power, not 0 — don't plot/skew
+  if(!deals.length) return <div style={{color:"var(--dim)",fontSize:12,padding:20}}>No power data to plot (hp missing).</div>;
   const xs=deals.map(d=>d.effective_monthly), ys=deals.map(d=>d.hp);
   const xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(...ys),ymax=Math.max(...ys);
   const xr=(xmax-xmin)||1, yr=(ymax-ymin)||1;

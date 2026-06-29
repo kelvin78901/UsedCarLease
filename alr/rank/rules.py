@@ -13,15 +13,20 @@ from ..schema import EnrichedListing
 
 def pareto_frontier(listings: list[EnrichedListing]) -> set[str]:
     """A listing is dominated if another is <= on cost and >= on hp, strictly
-    better on at least one axis. Frontier = the non-dominated set."""
+    better on at least one axis. Frontier = the non-dominated set.
+
+    Listings with hp<=0 are EXCLUDED: missing power (used cars vPIC couldn't
+    decode) isn't zero power — including them drags the cost-vs-power frontier to
+    the floor and falsely 'dominates' real low-power cars."""
+    pts = [l for l in listings if l.hp and l.hp > 0]
     front: set[str] = set()
-    for a in listings:
+    for a in pts:
         dominated = any(
             b.listing_key != a.listing_key
             and b.effective_monthly <= a.effective_monthly
             and b.hp >= a.hp
             and (b.effective_monthly < a.effective_monthly or b.hp > a.hp)
-            for b in listings
+            for b in pts
         )
         if not dominated:
             front.add(a.listing_key)
