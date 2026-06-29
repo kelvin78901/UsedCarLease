@@ -186,13 +186,22 @@ def recommend(body: PrefBody):
     return _do_rank(p)
 
 
+def _scored_in_context(key=None, match=None):
+    """Score one listing within the FULL snapshot so its percentile score/rank is
+    meaningful (ranking it alone would always yield the bottom percentile)."""
+    res = rank(S.listings, Prefs(budget=10**9, max_months=10**6,
+                                 top_k=len(S.listings) or 1), ltr_scorer=S.scorer)
+    hit = next((d for d in res.ranked
+                if (key and d.listing_key == key) or (match and d.vin and d.vin == match.vin)), None)
+    return (hit or match).model_dump() if (hit or match) else None
+
+
 @app.get("/listing/{key:path}")
 def listing(key: str):
     match = next((l for l in S.listings if l.listing_key == key), None)
     if not match:
         raise HTTPException(404, f"no listing {key}")
-    res = rank([match], Prefs(), ltr_scorer=S.scorer)
-    return res.ranked[0].model_dump() if res.ranked else match.model_dump()
+    return _scored_in_context(key=key, match=match)
 
 
 @app.get("/vehicle/{vin}")
@@ -202,8 +211,7 @@ def vehicle(vin: str):
     con.close()
     if not l:
         raise HTTPException(404, f"no listing with vin {vin}")
-    res = rank([l], Prefs(), ltr_scorer=S.scorer)
-    return res.ranked[0].model_dump() if res.ranked else l.model_dump()
+    return _scored_in_context(key=l.listing_key, match=l)
 
 
 # serve the dashboard at / (mounted last so /api routes above take precedence)

@@ -88,7 +88,24 @@ function Scatter({deals,selected}){
   </svg>;
 }
 
+function _CBRow({t,v}){
+  return <div className="fm" style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}>
+    <span style={{color:"var(--mid)"}}>{t}</span><span style={{color:"var(--hi)"}}>{v}</span></div>;
+}
 function CostBreakdown({d}){
+  if(isUsed(d)){
+    // used-car purchase: price-first, no lease ÷term / seller-incentive wording
+    return <div>
+      <_CBRow t="Sale price" v={d.price>0?fmt$(d.price):"—"}/>
+      {d.msrp>0 && <_CBRow t="MSRP" v={fmt$(d.msrp)}/>}
+      {d.msrp>0 && d.msrp_discount_pct>0 && <_CBRow t="Off MSRP" v={d.msrp_discount_pct+"%"}/>}
+      <_CBRow t="Odometer" v={d.odometer>0?d.odometer.toLocaleString()+" mi":"—"}/>
+      <div className="fm" style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--line)",
+        marginTop:6,paddingTop:6,fontSize:15,fontWeight:600}}>
+        <span>Est. finance $/mo</span><span style={{color:"var(--amber)"}}>{fmt$(d.effective_monthly)}</span></div>
+      <div style={{color:"var(--dim)",fontSize:10,marginTop:4}}>* est. finance pmt @7.5% APR / 72mo</div>
+    </div>;
+  }
   const rows=[["Base monthly",d.monthly,false],
     ["One-time fees ÷term",(d.drive_off+d.transfer_fee+d.acquisition_fee+d.disposition_fee)/d.months_remaining,true],
     ["Seller incentive ÷term",-d.seller_incentive/d.months_remaining,true]];
@@ -99,9 +116,6 @@ function CostBreakdown({d}){
     <div className="fm" style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--line)",
       marginTop:6,paddingTop:6,fontSize:15,fontWeight:600}}>
       <span>Effective $/mo</span><span style={{color:"var(--amber)"}}>{fmt$(d.effective_monthly)}</span></div>
-    {isUsed(d) && <div style={{color:"var(--dim)",fontSize:10,marginTop:4}}>
-      * used-car purchase{d.price>0?` — sale price ${fmt$(d.price)}`:""}: monthly is an
-      est. finance pmt @7.5%/72mo</div>}
   </div>;
 }
 
@@ -145,7 +159,7 @@ function VehiclePage({routeKey}){
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginTop:22}}>
-        <Card title="Effective cost build-up"><CostBreakdown d={d}/></Card>
+        <Card title={isUsed(d)?"Sale & finance":"Effective cost build-up"}><CostBreakdown d={d}/></Card>
         <Card title={d.scorer==="ltr"?"Why the model ranked it here":"Why it ranks here"}>
           <Drivers drivers={d.score_drivers}/>
           <div style={{color:"var(--mid)",fontSize:11.5,lineHeight:1.5,marginTop:10,
