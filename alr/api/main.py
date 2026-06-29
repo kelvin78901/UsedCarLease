@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..config import ROOT
-from ..rank.pipeline import Prefs, rank
+from ..rank.pipeline import Prefs, rank, is_used
 from ..rank.ltr import LTRScorer
 from ..store import db as _db
 
@@ -106,11 +106,14 @@ def stats():
     bodies: dict[str, int] = {}
     for l in S.listings:
         bodies[l.body] = bodies.get(l.body, 0) + 1
+    used = [l for l in S.listings if is_used(l)]
     return {
         "active": len(S.listings),
         "median_effective": median(effs),
         "min_effective": min(effs),
         "by_body": bodies,
+        "by_type": {"used": len(used), "lease": len(S.listings) - len(used)},
+        "used_cpo": sum(1 for l in used if l.cpo),
         "ranker": "ltr" if S.scorer else "rules",
     }
 
@@ -118,6 +121,8 @@ def stats():
 class PrefBody(BaseModel):
     budget: float = 1400
     bodies: list[str] = []          # empty = all body types (no filter)
+    listing_type: str = "all"       # all | lease | used
+    cpo_only: bool = False
     want_awd: bool = False
     want_lux: bool = False
     min_mpm: int = 0
@@ -136,6 +141,8 @@ def _do_rank(p: Prefs):
 def top_deals(
     budget: float = Query(1400),
     bodies: str = Query(""),           # empty = all body types (no filter)
+    listing_type: str = Query("all"),  # all | lease | used
+    cpo_only: bool = Query(False),
     want_awd: bool = Query(False),
     want_lux: bool = Query(False),
     min_mpm: int = Query(0),
@@ -146,6 +153,7 @@ def top_deals(
     p = Prefs(
         budget=budget,
         bodies=set(b for b in bodies.split(",") if b),
+        listing_type=listing_type, cpo_only=cpo_only,
         want_awd=want_awd, want_lux=want_lux, min_mpm=min_mpm,
         max_months=max_months,
         pref_states=set(s for s in pref_states.split(",") if s),
@@ -158,6 +166,7 @@ def top_deals(
 def recommend(body: PrefBody):
     p = Prefs(
         budget=body.budget, bodies=set(body.bodies),
+        listing_type=body.listing_type, cpo_only=body.cpo_only,
         want_awd=body.want_awd, want_lux=body.want_lux, min_mpm=body.min_mpm,
         max_months=body.max_months, pref_states=set(body.pref_states),
         top_k=body.top_k,

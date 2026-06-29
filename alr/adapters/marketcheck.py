@@ -186,6 +186,8 @@ class MarketcheckAdapter(BaseAdapter):
                 "ev": fuel.startswith("electric"),
                 "hp": _hp_from_build(b),
                 "year": b.get("year"),
+                "cpo": bool(L.get("is_certified") or L.get("certified") or L.get("cpo")
+                            or str(L.get("inventory_type") or "").lower() == "cpo"),
                 "odometer": L.get("miles"),
                 "price": price,
                 "seller_type": L.get("seller_type"),

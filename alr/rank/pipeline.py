@@ -15,17 +15,34 @@ from dataclasses import dataclass, field
 from ..schema import EnrichedListing, ScoredListing
 from . import rules
 
+# Used-car purchases (estimated finance monthly) vs lease takeovers (real monthly).
+USED_SOURCES = {"marketcheck", "cars"}
+
+
+def is_used(l) -> bool:
+    return l.source in USED_SOURCES
+
 
 @dataclass
 class Prefs:
     budget: float = 1400
     bodies: set[str] = field(default_factory=set)  # empty = no body filter (all types)
+    listing_type: str = "all"      # all | lease | used
+    cpo_only: bool = False         # used cars: certified pre-owned only
     want_awd: bool = False
     want_lux: bool = False
     min_mpm: int = 0
     max_months: int = 120   # inclusive by default: financed used cars carry a 72mo term
     pref_states: set[str] = field(default_factory=set)
     top_k: int = 100
+
+
+def _type_ok(l, lt: str) -> bool:
+    if lt == "used":
+        return is_used(l)
+    if lt == "lease":
+        return not is_used(l)
+    return True  # "all"
 
 
 @dataclass
@@ -61,6 +78,8 @@ def rank(listings: list[EnrichedListing], prefs: Prefs,
     filtered = [
         l for l in listings
         if (not prefs.bodies or l.body in prefs.bodies)
+        and _type_ok(l, prefs.listing_type)
+        and (not prefs.cpo_only or l.cpo)
         and l.effective_monthly <= prefs.budget
         and l.miles_per_month >= prefs.min_mpm
         and l.months_remaining <= prefs.max_months

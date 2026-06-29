@@ -57,6 +57,10 @@ def normalize(raw: RawListing) -> NormalizedListing | None:
         days_on_market=int(raw.days_on_market or 0),
         price_drops=int(raw.price_drops or 0),
         favorites=int(raw.favorites or 0),
+        cpo=bool(raw.raw.get("cpo")),
+        odometer=int(raw.raw.get("odometer") or 0),
+        price=float(raw.raw.get("price") or 0.0),
+        dealer_city=(raw.raw.get("city") or "")[:60],
         crawled_at=raw.crawled_at,
     )
     # carry adapter-known build data forward for the enricher (precedence:

@@ -34,6 +34,7 @@
 const { useState, useEffect } = React;
 const API = location.origin.includes("file") ? "http://localhost:8000" : "";
 const fmt$ = n => "$" + Math.round(n).toLocaleString();
+const isUsed = d => !!d && (d.source === "marketcheck" || d.source === "cars");
 const SRC = {leasehackr:"#F4B645",marketcheck:"#5BD9CB",swapalease:"#9C8BF5",
              leasetrader:"#9C8BF5",seed:"#AEB9CA"};
 const nav = key => { window.location.hash = "#/v/" + encodeURIComponent(key); };
@@ -98,8 +99,9 @@ function CostBreakdown({d}){
     <div className="fm" style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--line)",
       marginTop:6,paddingTop:6,fontSize:15,fontWeight:600}}>
       <span>Effective $/mo</span><span style={{color:"var(--amber)"}}>{fmt$(d.effective_monthly)}</span></div>
-    {d.monthly_is_estimate && <div style={{color:"var(--dim)",fontSize:10,marginTop:4}}>
-      * used-car purchase: monthly is an estimated finance payment</div>}
+    {isUsed(d) && <div style={{color:"var(--dim)",fontSize:10,marginTop:4}}>
+      * used-car purchase{d.price>0?` — sale price ${fmt$(d.price)}`:""}: monthly is an
+      est. finance pmt @7.5%/72mo</div>}
   </div>;
 }
 
@@ -124,10 +126,14 @@ function VehiclePage({routeKey}){
     {d && <div style={{marginTop:16}}>
       <div style={{display:"flex",alignItems:"flex-start",gap:16,flexWrap:"wrap"}}>
         <div style={{flex:1,minWidth:260}}>
-          <div className="fd" style={{fontSize:26,fontWeight:700}}>{d.make} {d.model}</div>
+          <div className="fd" style={{fontSize:26,fontWeight:700}}>{d.make} {d.model}
+            {d.cpo && <span className="fm" style={{fontSize:11,fontWeight:600,color:"var(--teal)",
+              border:"1px solid #5BD9CB55",borderRadius:5,padding:"2px 7px",marginLeft:10,verticalAlign:"middle"}}>CPO</span>}</div>
           <div className="fm" style={{color:"var(--mid)",fontSize:13,marginTop:4}}>
-            <span style={{color:SRC[d.source]||"var(--mid)"}}>{d.source}</span> · {d.state} ·
-            {" "}{d.hp}hp · {fmt$(d.msrp)} MSRP · {d.msrp_discount_pct}% off · #{d.rank}</div>
+            <span style={{color:SRC[d.source]||"var(--mid)"}}>{d.source}</span> · {d.dealer_city?d.dealer_city+", ":""}{d.state} ·
+            {" "}{d.hp}hp · {isUsed(d)
+              ? <>{d.price>0?fmt$(d.price)+" sale":""} · est. {fmt$(d.effective_monthly)}/mo @7.5%/72mo · {d.odometer>0?d.odometer.toLocaleString()+" mi":"mileage n/a"}</>
+              : <>{fmt$(d.msrp)} MSRP · {d.msrp_discount_pct}% off</>} · #{d.rank}</div>
           <div style={{marginTop:8}}><ExternalLink url={d.url}/></div>
         </div>
         <div style={{textAlign:"center"}}>
@@ -149,13 +155,18 @@ function VehiclePage({routeKey}){
 
       <Card title="Listing detail" style={{marginTop:16}}>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px 18px"}} className="fm">
-          {[["Effective $/mo",fmt$(d.effective_monthly)],["Monthly",fmt$(d.monthly)],
-            ["MSRP",fmt$(d.msrp)],["Term left",d.months_remaining+" mo"],
-            ["Miles left",d.remaining_miles.toLocaleString()],["Miles/mo",d.miles_per_month],
-            ["Drive-off",fmt$(d.drive_off)],["Transfer fee",fmt$(d.transfer_fee)],
-            ["Seller incentive",fmt$(d.seller_incentive)],["Days on market",d.days_on_market],
-            ["vs-market edge",Math.round(d.value_edge*100)+"%"],["On frontier",d.on_frontier?"yes":"no"],
-            ["Body",d.body],["AWD",d.awd?"yes":"no"],["State",d.state]].map(([k,v],i)=>
+          {(isUsed(d)
+            ? [["Sale price",d.price>0?fmt$(d.price):"—"],["Est. finance $/mo",fmt$(d.effective_monthly)+" @7.5%/72mo"],
+               ["Odometer",d.odometer>0?d.odometer.toLocaleString()+" mi":"—"],["Dealer",d.dealer_city?d.dealer_city+", "+d.state:d.state],
+               ["Days on market",d.days_on_market],["Certified (CPO)",d.cpo?"yes":"no"],
+               ["MSRP",d.msrp>0?fmt$(d.msrp):"—"],["Body",d.body],["AWD",d.awd?"yes":"no"]]
+            : [["Effective $/mo",fmt$(d.effective_monthly)],["Monthly",fmt$(d.monthly)],
+               ["MSRP",fmt$(d.msrp)],["Term left",d.months_remaining+" mo"],
+               ["Miles left",d.remaining_miles.toLocaleString()],["Miles/mo",d.miles_per_month],
+               ["Drive-off",fmt$(d.drive_off)],["Transfer fee",fmt$(d.transfer_fee)],
+               ["Seller incentive",fmt$(d.seller_incentive)],["Days on market",d.days_on_market],
+               ["vs-market edge",Math.round(d.value_edge*100)+"%"],["On frontier",d.on_frontier?"yes":"no"],
+               ["Body",d.body],["AWD",d.awd?"yes":"no"],["State",d.state]]).map(([k,v],i)=>
             <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:12,
               borderBottom:"1px solid #1A2230",padding:"4px 0"}}>
               <span style={{color:"var(--dim)"}}>{k}</span><span>{v}</span></div>)}
@@ -191,6 +202,8 @@ function Stage({i,t,n,col}){
 function Dashboard(){
   const [budget,setBudget]=useState(900);
   const [bodies,setBodies]=useState(null);   // null until /stats tells us the real types
+  const [tab,setTab]=useState("all");        // all | lease | used
+  const [cpoOnly,setCpo]=useState(false);
   const [wantAwd,setAwd]=useState(false);
   const [wantLux,setLux]=useState(false);
   const [prefStates,setStates]=useState({});
@@ -210,10 +223,12 @@ function Dashboard(){
     // send a body filter only for a proper subset; all (or none) selected => empty => no filter
     const b=(keys.length && sel.length>0 && sel.length<keys.length)?encodeURIComponent(sel.join(",")):"";
     const ps=Object.keys(prefStates).filter(k=>prefStates[k]).join(",");
-    const q=`budget=${budget}&bodies=${b}&want_awd=${wantAwd}&want_lux=${wantLux}&pref_states=${ps}&top_k=100`;
+    const cpo=(tab==="used"&&cpoOnly);
+    const q=`budget=${budget}&bodies=${b}&listing_type=${tab}&cpo_only=${cpo}`
+          +`&want_awd=${wantAwd}&want_lux=${wantLux}&pref_states=${ps}&top_k=100`;
     fetch(API+"/top_deals?"+q).then(r=>r.json()).then(d=>{setData(d);setErr(null);})
       .catch(()=>setErr("API not reachable. Start it: uvicorn alr.api.main:app"));
-  },[budget,bodies,wantAwd,wantLux,prefStates]);
+  },[budget,bodies,tab,cpoOnly,wantAwd,wantLux,prefStates]);
 
   const deals=data.deals||[];
   const selected = sel ? deals.find(d=>d.listing_key===sel)||deals[0] : deals[0];
@@ -226,6 +241,14 @@ function Dashboard(){
         AutoLease<span style={{color:"var(--amber)"}}>Rank</span></span>
       <span className="fm" style={{color:"var(--dim)",fontSize:10,border:"1px solid var(--line)",padding:"1px 6px",borderRadius:4}}>
         {stats.ranker==="ltr"?"LambdaMART · model-scored":"rules"}&nbsp;·&nbsp;live</span>
+      <div style={{display:"flex",gap:4}}>
+        {[["all","All",stats.active],["lease","Leases",stats.by_type&&stats.by_type.lease],
+          ["used","Used cars",stats.by_type&&stats.by_type.used]].map(([k,label,n])=>
+          <button key={k} onClick={()=>setTab(k)} className="fm" style={{fontSize:12,padding:"5px 12px",
+            borderRadius:8,border:"1px solid "+(tab===k?"var(--amber)":"var(--line)"),
+            background:tab===k?"var(--amber)":"transparent",color:tab===k?"var(--ink)":"var(--mid)",
+            fontWeight:tab===k?600:400}}>{label}{n!=null?` · ${n}`:""}</button>)}
+      </div>
       <div style={{marginLeft:"auto",display:"flex",gap:20}} className="fm">
         <Pulse label="ACTIVE" value={stats.active??"—"}/>
         <Pulse label="MEDIAN $/MO" value={stats.median_effective?fmt$(stats.median_effective):"—"}/>
@@ -254,6 +277,13 @@ function Dashboard(){
               {b} <span style={{opacity:.55}}>{stats.by_body[b]}</span></Chip>)
             : <span style={{color:"var(--dim)",fontSize:11}}>loading…</span>}
         </div>
+        {tab==="used" && <>
+          <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",marginTop:18,letterSpacing:".04em"}}>Certified (CPO)</div>
+          <div style={{display:"flex",gap:6,marginTop:8}}>
+            <Chip on={cpoOnly} onClick={()=>setCpo(v=>!v)}>
+              CPO only{stats.used_cpo!=null?` · ${stats.used_cpo}`:""}</Chip>
+          </div>
+        </>}
         <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",marginTop:18,letterSpacing:".04em"}}>Boost</div>
         <div style={{display:"flex",gap:6,marginTop:8}}>
           <Chip on={wantAwd} onClick={()=>setAwd(v=>!v)}>AWD +7</Chip>
@@ -300,6 +330,8 @@ function Dashboard(){
               <div style={{minWidth:0,flex:1}}>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <span className="fd" style={{fontWeight:600,fontSize:13.5}}>{d.make} {d.model}</span>
+                  {d.cpo && <span className="fm" style={{fontSize:9,fontWeight:600,color:"var(--teal)",
+                    border:"1px solid #5BD9CB55",borderRadius:5,padding:"1px 5px"}}>CPO</span>}
                   {d.on_frontier && <span className="fm" style={{fontSize:9,fontWeight:600,color:"var(--amber)",
                     border:"1px solid #F4B64555",borderRadius:5,padding:"1px 5px"}}>FRONTIER</span>}
                   {d.seller_incentive>0 && <span className="fm" style={{fontSize:9,fontWeight:600,color:"var(--teal)",
@@ -308,13 +340,26 @@ function Dashboard(){
                 <div className="fm" style={{display:"flex",gap:12,marginTop:4,color:"var(--mid)",fontSize:11}}>
                   <span style={{color:SRC[d.source]||"var(--mid)"}}>{d.source}</span>
                   <span>{d.state}</span><span>{d.hp}hp</span>
-                  <span>{d.months_remaining}mo · {d.remaining_miles.toLocaleString()}mi</span></div>
+                  {isUsed(d)
+                    ? <span>{d.odometer>0?d.odometer.toLocaleString()+"mi":"—"}{d.dealer_city?" · "+d.dealer_city:""}{d.days_on_market>0?" · "+d.days_on_market+"d on mkt":""}</span>
+                    : <span>{d.months_remaining}mo · {d.remaining_miles.toLocaleString()}mi</span>}</div>
               </div>
-              <div style={{textAlign:"right"}}>
-                <div className="fm" style={{fontSize:18,fontWeight:600}}>{fmt$(d.effective_monthly)}</div>
-                <div className="fm" style={{fontSize:10.5,color:"var(--dim)"}}>eff/mo</div>
-                <div className="fm" style={{fontSize:11,color:edge>=0?"var(--teal)":"var(--red)",marginTop:2}}>
-                  {edge>=0?"▼":"▲"}{Math.abs(edge)}% vs mkt</div></div>
+              {isUsed(d)
+                ? (d.price>0
+                  ? <div style={{textAlign:"right"}}>
+                      <div className="fm" style={{fontSize:18,fontWeight:600}}>{fmt$(d.price)}</div>
+                      <div className="fm" style={{fontSize:10.5,color:"var(--dim)"}}>sale price</div>
+                      <div className="fm" style={{fontSize:10.5,color:"var(--mid)",marginTop:2}}>
+                        est. {fmt$(d.effective_monthly)}/mo</div></div>
+                  : <div style={{textAlign:"right"}}>
+                      <div className="fm" style={{fontSize:18,fontWeight:600}}>{fmt$(d.effective_monthly)}</div>
+                      <div className="fm" style={{fontSize:10.5,color:"var(--dim)"}}>est. $/mo</div>
+                      <div className="fm" style={{fontSize:10,color:"var(--dim)",marginTop:2}}>finance @7.5%/72mo</div></div>)
+                : <div style={{textAlign:"right"}}>
+                    <div className="fm" style={{fontSize:18,fontWeight:600}}>{fmt$(d.effective_monthly)}</div>
+                    <div className="fm" style={{fontSize:10.5,color:"var(--dim)"}}>eff/mo</div>
+                    <div className="fm" style={{fontSize:11,color:edge>=0?"var(--teal)":"var(--red)",marginTop:2}}>
+                      {edge>=0?"▼":"▲"}{Math.abs(edge)}% vs mkt</div></div>}
               <div style={{display:"flex",flexDirection:"column",gap:6,paddingLeft:8,borderLeft:"1px solid var(--line)"}}>
                 <a className="lnk" href={d.url||"#"} target="_blank" rel="noopener noreferrer"
                   onClick={e=>e.stopPropagation()} title="open original listing"
@@ -336,7 +381,9 @@ function Dashboard(){
             <span onClick={()=>nav(selected.listing_key)} className="lnk" style={{fontSize:11.5,cursor:"pointer"}}>full page →</span>
           </div>
           <div className="fm" style={{color:"var(--mid)",fontSize:11,marginTop:2}}>
-            {fmt$(selected.msrp)} MSRP · {selected.msrp_discount_pct}% off · {selected.hp}hp</div>
+            {isUsed(selected)
+              ? <>{selected.cpo?"CPO · ":""}{selected.price>0?fmt$(selected.price)+" · ":""}{selected.odometer>0?selected.odometer.toLocaleString()+" mi · ":""}{selected.hp}hp · est. {fmt$(selected.effective_monthly)}/mo</>
+              : <>{fmt$(selected.msrp)} MSRP · {selected.msrp_discount_pct}% off · {selected.hp}hp</>}</div>
           <div style={{marginTop:6}}><ExternalLink url={selected.url}/></div>
           <div style={{borderTop:"1px solid var(--line)",marginTop:10,paddingTop:8}}>
             <CostBreakdown d={selected}/></div>

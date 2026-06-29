@@ -65,6 +65,11 @@ class NormalizedListing(BaseModel):
     days_on_market: int = 0
     price_drops: int = 0
     favorites: int = 0
+    # used-car fields (lease sources leave these at defaults)
+    cpo: bool = False              # certified pre-owned
+    odometer: int = 0              # current mileage (used cars)
+    price: float = 0.0             # sale price (used cars); leases use monthly/effective
+    dealer_city: str = ""
     crawled_at: datetime = Field(default_factory=_now)
 
 
