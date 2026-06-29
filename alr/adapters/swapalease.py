@@ -43,6 +43,45 @@ def _money(s):
     return float(m.group(1).replace(",", "")) if m else None
 
 
+def parse_detail(text: str) -> dict:
+    """Extract the structured fields from a swapalease detail page's inner_text.
+    Tested offline against tests/fixtures/swapalease_i4.html (no live request)."""
+    def num_after(label):
+        m = re.search(rf"{label}\s*[:#]?\s*\n?\s*\$?\s*([\d,]+(?:\.\d+)?)", text, re.I)
+        return _money(m.group(1)) if m else None
+
+    def text_after(label):
+        m = re.search(rf"{label}\s*[:#]?\s*\n?\s*([^\n]+)", text, re.I)
+        return m.group(1).strip() if m else None
+
+    d = {}
+    m = re.search(r"Effective Monthly Payment\s*\n?\s*\$\s*([\d,]+(?:\.\d+)?)", text, re.I)
+    d["effective"] = _money(m.group(1)) if m else None
+    m = re.search(r"Actual Payment\s*\$?\s*([\d,]+(?:\.\d+)?)", text, re.I)
+    d["actual"] = _money(m.group(1)) if m else None
+    m = re.search(r"offering you\s*\$\s*([\d,]+(?:\.\d+)?)", text, re.I) \
+        or re.search(r"after\s*\$\s*([\d,]+(?:\.\d+)?)\s*incentive", text, re.I)
+    d["incentive"] = _money(m.group(1)) if m else None
+    m = re.search(r"\bVIN\b\s*[:#]?\s*([A-HJ-NPR-Z0-9]{17})", text)
+    d["vin"] = m.group(1) if m else None
+    d["current_miles"] = int(num_after("Current Miles") or 0) or None
+    d["remaining_miles"] = int(num_after("Remaining Miles") or 0) or None
+    d["miles_per_month"] = int(num_after("Miles Per Month") or 0) or None
+    d["months"] = int(num_after("Months Remaining") or 0) or None
+    m = re.search(r"Est\.?\s*Lease End Date\s*[:#]?\s*\n?\s*(\d{1,2}/\d{1,2}/\d{2,4})", text, re.I)
+    d["end_date"] = m.group(1) if m else None
+    d["style"] = text_after("Style")
+    trim = text_after("Trim")
+    if trim:                                   # drop the powertrain prefix swapalease prepends
+        trim = re.sub(r"(?i)\b(single|dual|tri|twin)\s+electric motors?\s*", "", trim).strip()
+    d["trim"] = trim
+    d["leasing_company"] = text_after("Leasing Company")
+    d["exterior"] = text_after("Exterior Color")
+    m = re.search(r"\b(20\d{2})\b", text)
+    d["year"] = int(m.group(1)) if m else None
+    return d
+
+
 def _launch(p):
     return p.chromium.launch(headless=True, channel="chromium", args=[
         "--no-sandbox", "--disable-dev-shm-usage",
@@ -58,6 +97,30 @@ def _blocked(page, tag) -> bool:
               f"{head.strip()[:90]!r} -> emit 0. Needs proxy/stealth API (gated).")
         return True
     return False
+
+
+# incremental detail enrichment: only fetch detail pages for listings we haven't
+# detailed yet, capped per crawl so we don't re-hit all ~525 every 3h (self-throttle).
+DETAIL_MAX = int(os.getenv("ALR_SWAP_DETAIL_MAX", "60"))
+DETAIL_DELAY = float(os.getenv("ALR_SWAP_DETAIL_DELAY", "1.0"))
+
+
+def _already_detailed() -> set:
+    """source_ids (salids) of swapalease listings already enriched with a VIN, so
+    we skip re-fetching their detail page. Read-only; degrades to empty on lock."""
+    try:
+        import duckdb
+        from ..config import DB_PATH
+        con = duckdb.connect(str(DB_PATH), read_only=True)
+        rows = con.execute(
+            "select json_extract_string(data,'$.source_id') from current "
+            "where json_extract_string(data,'$.source')='swapalease' "
+            "and json_extract_string(data,'$.vin') is not null").fetchall()
+        con.close()
+        return {r[0] for r in rows if r[0]}
+    except Exception as e:
+        print(f"[swapalease] detail-skip lookup unavailable ({type(e).__name__}); cap-limited")
+        return set()
 
 
 @adapter("swapalease")
@@ -105,11 +168,52 @@ class SwapaleaseAdapter(BaseAdapter):
                         if r and r.source_id not in seen:
                             seen.add(r.source_id)
                             out.append(r)
+                # incremental detail enrichment (VIN / incentive / trim / year /
+                # odometer) for listings not yet detailed, capped + paced.
+                done = _already_detailed()
+                todo = [r for r in out if r.url and r.source_id not in done][:DETAIL_MAX]
+                got = 0
+                for r in todo:
+                    try:
+                        page.goto(r.url, wait_until="domcontentloaded", timeout=30000)
+                        page.wait_for_timeout(int(DETAIL_DELAY * 1000))   # politeness
+                        if self._merge_detail(r, parse_detail(page.inner_text("body"))):
+                            got += 1
+                    except Exception as e:
+                        print(f"[swapalease] detail {r.source_id} failed: {type(e).__name__}")
+                print(f"[swapalease] enriched {got}/{len(todo)} new detail pages "
+                      f"({len(done)} already detailed)")
                 br.close()
         except Exception as e:
             print(f"[swapalease] crawl failed: {type(e).__name__} {str(e)[:100]}")
         print(f"[swapalease] {len(out)} lease takeovers across {len(self.MAKES)} makes")
         return out
+
+    @staticmethod
+    def _merge_detail(r: RawListing, d: dict) -> bool:
+        """Fold detail-page fields into the listing. Sets monthly=actual +
+        seller_incentive so the effective-cost engine recomputes the page's
+        effective (actual − incentive/term). Returns True if a VIN was found."""
+        if d.get("actual") is not None:
+            r.monthly = d["actual"]                 # engine: effective = actual − incentive/term
+        if d.get("incentive") is not None:
+            r.seller_incentive = d["incentive"]
+        if d.get("months"):
+            r.months_remaining = d["months"]
+        if d.get("remaining_miles"):
+            r.remaining_miles = d["remaining_miles"]
+        if d.get("miles_per_month"):
+            r.miles_per_year = d["miles_per_month"] * 12
+        if d.get("current_miles"):
+            r.raw["odometer"] = d["current_miles"]
+        if d.get("year"):
+            r.raw["year"] = d["year"]
+        if d.get("trim") and d["trim"] not in (r.model or ""):
+            r.model = f"{r.model} {d['trim']}".strip()
+        if d.get("vin"):
+            r.vin = d["vin"]                          # -> pipeline vPIC fills hp/body/ev
+            return True
+        return False
 
     def _card(self, c):
         t = c.query_selector("span.listing-title")
