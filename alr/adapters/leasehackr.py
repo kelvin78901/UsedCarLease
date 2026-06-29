@@ -55,6 +55,18 @@ STATES = {s.lower() for s in (
     "MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC"
 ).split()}
 
+# popular model -> make, for titles that omit the brand ("Green Mach-E ...")
+MODEL_MAKE_ALIASES = {
+    "mach-e": "ford", "mach e": "ford", "mach": "ford", "lightning": "ford",
+    "maverick": "ford", "bronco": "ford",
+    "ioniq": "hyundai", "ariya": "nissan", "leaf": "nissan",
+    "id.4": "volkswagen", "id4": "volkswagen", "id 4": "volkswagen",
+    "lyriq": "cadillac", "ev6": "kia", "ev9": "kia", "telluride": "kia",
+    "bolt": "chevrolet", "blazer ev": "chevrolet",
+}
+_COLORS = ("black", "white", "silver", "gray", "grey", "red", "blue", "green",
+           "yellow", "orange", "brown", "gold", "beige", "tan", "purple")
+
 # labeled-field patterns over the stripped post body
 def _num(pat, text, default=None):
     m = re.search(pat, text, re.I)
@@ -95,6 +107,7 @@ def _clean_title(t: str) -> str:
     s = re.sub(r"^[\s\-–|>]*", "", s)
     s = re.sub(r"^(?:lease\s+transfer|transfer|takeover|ft|wtt|iso)\s*[:\-–]?\s*",
                " ", s, flags=re.I)
+    s = re.sub(r"[\s\-–|>/]+$", "", s)        # trailing separators ("... xDrive50 |")
     return s.strip()
 
 
@@ -292,20 +305,26 @@ class LeasehackrAdapter(BaseAdapter):
     @staticmethod
     def _make_from_title(title):
         s = re.sub(r"^\s*\d{4}\s*", "", _clean_title(title))
-        for tok in s.split():
-            lw = re.sub(r"[^a-z\-]", "", tok.lower())
-            if lw in MAKES:
-                return lw
-        toks = s.split()
-        return toks[0] if toks else None
+        toks = [re.sub(r"[^a-z0-9\-]", "", t.lower()) for t in s.split()]
+        toks = [t for t in toks if t]
+        for t in toks:                       # explicit brand token
+            if t in MAKES:
+                return t
+        joined = " ".join(toks)              # model -> brand alias ("mach-e" -> ford)
+        for alias, mk in MODEL_MAKE_ALIASES.items():
+            if alias in joined:
+                return mk
+        return None                          # unknown brand -> the gate drops it
 
     @staticmethod
     def _model_from_title(title, make):
         s = re.sub(r"^\s*\d{4}\s*", "", _clean_title(title))
+        s = re.sub(rf"^\s*(?:{'|'.join(_COLORS)})\s+", "", s, flags=re.I)  # drop a leading color
         if make:
             s = re.sub(rf"^\s*{re.escape(make.split('-')[0])}\w*\s*", "", s, flags=re.I)
-        s = re.split(r"[-,(]|\$|\d+\s*/?\s*mo", s)[0]
-        return (s.strip()[:40] or "Unknown")
+        s = re.split(r"[-,(|/]|\$|\d+\s*/?\s*mo", s)[0]   # split off " | ..." / " / ..."
+        s = re.sub(r"[\s\-–|>/]+$", "", s.strip())        # and any trailing separator
+        return (s[:40] or "Unknown")
 
     @staticmethod
     def _age_days(created_at):
