@@ -32,8 +32,14 @@ from .base import BaseAdapter, adapter
 from ..schema import RawListing
 
 BASE = "https://forum.leasehackr.com"
-CATEGORY = os.getenv("ALR_LH_CATEGORY", "c/private-transfers/12")
-MAX_TOPICS = int(os.getenv("ALR_LH_MAX_TOPICS", "60"))
+DEFAULT_CATEGORY = "c/private-transfers/12"
+# ALR_LH_CATEGORY: comma-separated Discourse category paths (each "c/<slug>/<id>"
+# or "c/<parent>/<slug>/<id>" for a subcategory). Unset -> private-transfers plus
+# whatever regional marketplace boards autodiscovery finds on the live site.
+_ENV_CATS = [c.strip() for c in os.getenv("ALR_LH_CATEGORY", "").split(",") if c.strip()]
+AUTODISCOVER = os.getenv("ALR_LH_AUTODISCOVER", "1") == "1"
+MAX_TOPICS = int(os.getenv("ALR_LH_MAX_TOPICS", "60"))   # now PER category
+MAX_PAGES = int(os.getenv("ALR_LH_MAX_PAGES", "12"))
 REQ_DELAY = float(os.getenv("ALR_LH_DELAY", "0.4"))   # politeness between topic fetches
 
 MAKES = {
@@ -90,45 +96,102 @@ def _clean_title(t: str) -> str:
 @adapter("leasehackr")
 class LeasehackrAdapter(BaseAdapter):
     def fetch(self) -> Iterable[RawListing]:
-        count = 0
-        page = 0
-        seen = 0
-        while count < MAX_TOPICS and page < 12:
-            try:
-                r = self.client.get(f"{BASE}/{CATEGORY}.json?page={page}")
-                r.raise_for_status()
-                topics = r.json().get("topic_list", {}).get("topics", [])
-            except Exception as e:
-                print(f"[leasehackr] category page {page} failed: {e}")
-                break
-            if not topics:
-                break  # past the last page
-            seen += len(topics)
-
-            for t in topics:
-                if count >= MAX_TOPICS:
+        cats = self._categories()
+        print(f"[leasehackr] crawling {len(cats)} categor"
+              f"{'y' if len(cats) == 1 else 'ies'}: {cats}")
+        grand_seen = grand_emit = 0
+        for cat in cats:
+            seen = emitted = page = 0
+            while emitted < MAX_TOPICS and page < MAX_PAGES:
+                topics = self._category_page(cat, page)
+                if not topics:        # error or past the last page
                     break
-                tid = t.get("id")
-                title = (t.get("title") or "")
-                if tid is None or title.lower().startswith("about the"):
-                    continue
-                if RE_SOLD.search(title):     # deal already gone
-                    continue
-                tags = [str(x).lower() for x in (t.get("tags") or [])]
-                make = next((tg for tg in tags if tg in MAKES), None)
-                state = next((tg.upper() for tg in tags if tg in STATES), None)
+                seen += len(topics)
+                for t in topics:
+                    if emitted >= MAX_TOPICS:
+                        break
+                    cand = self._screen(t)
+                    if cand is None:
+                        continue
+                    body = self._body(cand["tid"])
+                    time.sleep(REQ_DELAY)
+                    if body is None:
+                        continue
+                    rl = self._parse(cand["tid"], cand["title"], cand["tags"],
+                                     cand["make"], cand["state"], body, t)
+                    if rl:
+                        emitted += 1
+                        yield rl
+                page += 1
+            grand_seen += seen
+            grand_emit += emitted
+            print(f"[leasehackr]   {cat}: scanned {seen} across {page} page(s), "
+                  f"emitted {emitted}")
+        print(f"[leasehackr] scanned {grand_seen} topics, emitted {grand_emit} "
+              f"rankable listings across {len(cats)} categories")
 
-                body = self._body(tid)
-                time.sleep(REQ_DELAY)
-                if body is None:
-                    continue
-                rl = self._parse(tid, title, tags, make, state, body, t)
-                if rl:
-                    count += 1
-                    yield rl
-            page += 1
-        print(f"[leasehackr] scanned {seen} topics across {page} page(s), "
-              f"emitted {count} rankable listings")
+    # ---- category selection -------------------------------------------------
+    def _categories(self) -> list[str]:
+        """Explicit ALR_LH_CATEGORY list wins; otherwise private-transfers plus
+        autodiscovered regional marketplace boards."""
+        if _ENV_CATS:
+            return _ENV_CATS
+        if AUTODISCOVER:
+            return self._resolve_categories(DEFAULT_CATEGORY)
+        return [DEFAULT_CATEGORY]
+
+    def _resolve_categories(self, default: str) -> list[str]:
+        """Read the live category tree and build paths for private-transfers and
+        every subcategory under a 'Marketplace' parent. Avoids hardcoding ids
+        that drift. Falls back to `default` on any failure."""
+        try:
+            r = self.client.get(f"{BASE}/categories.json?include_subcategories=true")
+            r.raise_for_status()
+            cats = r.json().get("category_list", {}).get("categories", [])
+        except Exception as e:
+            print(f"[leasehackr] category autodiscovery failed ({e}); using default")
+            return [default]
+        found: list[str] = []
+        for c in cats:
+            slug = c.get("slug") or ""
+            cid = c.get("id")
+            name = (c.get("name") or "").lower()
+            if slug == "private-transfers" or "transfer" in name:
+                found.append(f"c/{slug}/{cid}")
+            if slug == "marketplace" or "marketplace" in name:
+                for s in (c.get("subcategory_list") or []):
+                    if s.get("slug") and s.get("id"):
+                        found.append(f"c/{slug}/{s['slug']}/{s['id']}")
+        # de-dup preserving order; guarantee the known-good default is present
+        if default not in found:
+            found.insert(0, default)
+        seen: set[str] = set()
+        ordered = [x for x in found if not (x in seen or seen.add(x))]
+        return ordered or [default]
+
+    # ---- per-category page + per-topic screen -------------------------------
+    def _category_page(self, cat: str, page: int) -> list | None:
+        try:
+            r = self.client.get(f"{BASE}/{cat}.json?page={page}")
+            r.raise_for_status()
+            return r.json().get("topic_list", {}).get("topics", [])
+        except Exception as e:
+            print(f"[leasehackr] {cat} page {page} failed: {e}")
+            return None
+
+    @staticmethod
+    def _screen(t: dict) -> dict | None:
+        """Cheap title/tag gate before we spend a request on the topic body."""
+        tid = t.get("id")
+        title = t.get("title") or ""
+        if tid is None or title.lower().startswith("about the"):
+            return None
+        if RE_SOLD.search(title):     # deal already gone
+            return None
+        tags = [str(x).lower() for x in (t.get("tags") or [])]
+        make = next((tg for tg in tags if tg in MAKES), None)
+        state = next((tg.upper() for tg in tags if tg in STATES), None)
+        return {"tid": tid, "title": title, "tags": tags, "make": make, "state": state}
 
     def _body(self, tid):
         try:

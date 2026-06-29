@@ -25,6 +25,7 @@ ALR_MC_MAX_ROWS. Without a key the adapter no-ops cleanly.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -40,6 +41,21 @@ PAGE = min(50, MAX_ROWS)                                # API max 50/req
 APR = float(os.getenv("ALR_MC_APR", "0.075"))         # finance assumptions for
 TERM = int(os.getenv("ALR_MC_TERM", "72"))            # the price->monthly estimate
 EXTRA_PARAMS = os.getenv("ALR_MC_PARAMS", "")          # e.g. "make=Toyota&price_range=10000-30000"
+
+
+def _hp_from_build(b: dict) -> int:
+    """Best-effort horsepower from the Marketcheck build object. The API usually
+    omits a dedicated hp field, so we also scrape the descriptive engine string
+    (e.g. '2.0L Turbo 248 hp'). 0 when unknown -> vPIC batch fills the gap."""
+    for k in ("horsepower", "engine_power", "power"):
+        v = b.get(k)
+        if v:
+            try:
+                return int(float(v))
+            except (TypeError, ValueError):
+                pass
+    m = re.search(r"(\d{2,4})\s*hp", b.get("engine") or "", re.I)
+    return int(m.group(1)) if m else 0
 
 
 def amortized_monthly(price: float, apr: float = APR, term: int = TERM) -> float:
@@ -120,6 +136,8 @@ class MarketcheckAdapter(BaseAdapter):
                 "body": body,
                 "awd": ("AWD" in dt or "4WD" in dt or "4X4" in dt),
                 "ev": fuel.startswith("electric"),
+                "hp": _hp_from_build(b),
+                "year": b.get("year"),
                 "odometer": L.get("miles"),
                 "price": price,
                 "seller_type": L.get("seller_type"),

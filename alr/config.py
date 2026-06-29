@@ -17,6 +17,7 @@ ENABLED_ADAPTERS = os.getenv("ALR_ADAPTERS", "leasehackr,marketcheck").split(","
 
 # NHTSA vPIC is free + keyless
 VPIC_BASE = os.getenv("ALR_VPIC_BASE", "https://vpic.nhtsa.dot.gov/api")
+VPIC_BATCH_SIZE = int(os.getenv("ALR_VPIC_BATCH_SIZE", "50"))  # DecodeVINValuesBatch cap
 
 CRAWL_INTERVAL_MIN = int(os.getenv("ALR_CRAWL_INTERVAL_MIN", "30"))
 HTTP_TIMEOUT = float(os.getenv("ALR_HTTP_TIMEOUT", "20"))

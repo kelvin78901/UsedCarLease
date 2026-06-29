@@ -9,7 +9,7 @@ from ..config import ENABLED_ADAPTERS, HTTP_TIMEOUT, USER_AGENT
 from ..adapters.base import get_adapters
 # import adapter modules so @adapter decorators register them
 from ..adapters import leasehackr, swapalease, cars, marketcheck  # noqa: F401
-from ..enrich.nhtsa import enrich
+from ..enrich.nhtsa import enrich_all
 from ..schema import EnrichedListing
 from . import normalize as _norm
 from . import dedup as _dedup
@@ -35,19 +35,24 @@ def crawl(adapters: list[str] | None = None, persist: bool = True) -> list[Enric
     normalized = [n for n in (_norm.normalize(r) for r in raw) if n]
     deduped = _dedup.dedup(normalized)
 
-    with httpx.Client(timeout=HTTP_TIMEOUT,
-                      headers={"User-Agent": USER_AGENT}) as client:
-        enriched_norm = [enrich(l, client) for l in deduped]
+    # One DuckDB connection for the whole tail: vin_cache read/write during
+    # enrichment AND the final snapshot write. Single writer, by design.
+    con = _db.connect() if persist else None
+    try:
+        with httpx.Client(timeout=HTTP_TIMEOUT,
+                          headers={"User-Agent": USER_AGENT}) as client:
+            enriched_norm = enrich_all(deduped, client, con=con)
 
-    enriched = _feat.build_features(enriched_norm)
-    print(f"[crawl] {len(raw)} raw -> {len(normalized)} normalized "
-          f"-> {len(deduped)} unique -> {len(enriched)} enriched")
+        enriched = _feat.build_features(enriched_norm)
+        print(f"[crawl] {len(raw)} raw -> {len(normalized)} normalized "
+              f"-> {len(deduped)} unique -> {len(enriched)} enriched")
 
-    if persist and enriched:
-        con = _db.connect()
-        _db.save_snapshot(con, enriched)
-        con.close()
-        print("[crawl] snapshot persisted")
+        if persist and enriched:
+            _db.save_snapshot(con, enriched)
+            print("[crawl] snapshot persisted")
+    finally:
+        if con is not None:
+            con.close()
     return enriched
 
 

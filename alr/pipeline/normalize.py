@@ -59,7 +59,17 @@ def normalize(raw: RawListing) -> NormalizedListing | None:
         favorites=int(raw.favorites or 0),
         crawled_at=raw.crawled_at,
     )
-    # carry adapter-known flags forward for the enricher
+    # carry adapter-known build data forward for the enricher (precedence:
+    # adapter-provided beats vPIC beats catalog). Marketcheck supplies all four.
     if "awd" in raw.raw:
         n.__dict__["_awd"] = bool(raw.raw["awd"])
+    if "ev" in raw.raw:
+        n.__dict__["_ev"] = bool(raw.raw["ev"])
+    if raw.raw.get("hp"):
+        n.__dict__["_hp"] = int(raw.raw["hp"])
+    if raw.raw.get("year"):
+        try:
+            n.__dict__["_year"] = int(raw.raw["year"])
+        except (TypeError, ValueError):
+            pass
     return n

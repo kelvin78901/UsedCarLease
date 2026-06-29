@@ -30,6 +30,11 @@ def connect() -> duckdb.DuckDBPyConnection:
             effective_monthly DOUBLE, days_on_market INTEGER,
             price_drops INTEGER, favorites INTEGER
         );
+        CREATE TABLE IF NOT EXISTS vin_cache (
+            vin VARCHAR PRIMARY KEY,
+            body VARCHAR, hp INTEGER, ev BOOLEAN, awd BOOLEAN,
+            decoded_at TIMESTAMP
+        );
     """)
     return con
 
@@ -43,6 +48,34 @@ def save_snapshot(con: duckdb.DuckDBPyConnection, listings: list[EnrichedListing
     hist_rows = [(ts, l.listing_key, l.effective_monthly, l.days_on_market,
                   l.price_drops, l.favorites) for l in listings]
     con.executemany("INSERT INTO history VALUES (?, ?, ?, ?, ?, ?)", hist_rows)
+
+
+def vin_cache_get(con: duckdb.DuckDBPyConnection | None, vins) -> dict[str, dict]:
+    """Look up already-decoded VINs (uppercased keys) -> {body, hp, ev, awd}.
+    Lets a crawl skip re-hitting vPIC for VINs it decoded on an earlier run."""
+    vins = [v.upper() for v in vins]
+    if not con or not vins:
+        return {}
+    ph = ",".join("?" * len(vins))
+    rows = con.execute(
+        f"SELECT vin, body, hp, ev, awd FROM vin_cache WHERE vin IN ({ph})",
+        vins).fetchall()
+    return {r[0]: {"body": r[1], "hp": r[2], "ev": r[3], "awd": r[4]} for r in rows}
+
+
+def vin_cache_put(con: duckdb.DuckDBPyConnection | None, decoded: dict[str, dict]) -> None:
+    """Persist freshly decoded VINs. Empty decodes (no body and no hp) are skipped
+    so a later run can retry them rather than caching a useless miss forever."""
+    if not con or not decoded:
+        return
+    ts = datetime.now(timezone.utc)
+    rows = [(v.upper(), d.get("body"), int(d.get("hp") or 0),
+             bool(d.get("ev")), bool(d.get("awd")), ts)
+            for v, d in decoded.items()
+            if d.get("body") or d.get("hp")]
+    if rows:
+        con.executemany(
+            "INSERT OR REPLACE INTO vin_cache VALUES (?, ?, ?, ?, ?, ?)", rows)
 
 
 def load_current(con: duckdb.DuckDBPyConnection) -> list[EnrichedListing]:
