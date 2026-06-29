@@ -87,6 +87,29 @@ the `vin;year|...` written in §4.1 — the wrong format silently returns garbag
   filter) and `max_months` defaults to 120. Result: default dashboard
   `FILTERED 7 → 3124`, "Ranked deals" 7 → 100, Pickup/Wagon/Van/etc. now visible.
 
+**New sources + used-car/lease split + CPO round:**
+- **Cars.com works** (`adapters/cars.py` rewrite): parses the embedded
+  `srp_results` JSON (vin/price/mileage/body/drivetrain/`cpoIndicator`), waits for
+  the cards, paginates. ~72 listings/3 pages, with real price/odometer/CPO. The
+  old `div.vehicle-card` selector was stale + it used `networkidle`. Dealer
+  city/state are best-effort (JSON has only the dealer zip; DOM↔JSON id join is
+  unreliable) — price/odometer/cpo are solid.
+- **Playwright stability:** Chromium's default `headless_shell` **segfaults** in
+  this Docker/Apple-Silicon container → launch with `channel="chromium"`. And a
+  `BROWSER_LOCK` serializes concurrent browser launches (3 at once crash). Added
+  `playwright-stealth`. Swapalease/LeaseTrader are **reachable** (pages load) but
+  their placeholder selectors are stale → honest emit 0 (NOT WAF-blocked; wiring
+  them up = the same embedded-JSON reverse-engineering done for cars.com).
+- **Used cars vs leases:** `listing_type` (all|lease|used; used = marketcheck/cars,
+  derived from source so the pre-existing 3.3k classifies without re-crawl).
+  Dashboard tabs + used-car terminology (sale price / est-finance label) + CPO
+  badge + "CPO only" filter. schema gained `cpo/odometer/price/dealer_city`. The
+  preserved marketcheck 3.3k predate price/odometer (show est-$/mo fallback); new
+  cars listings have them. `/stats` adds `by_type` + `used_cpo`.
+- Live now: `/stats` active ~3370, by_type used ~3363 / lease 7, used_cpo ~2;
+  persistent `ALR_ADAPTERS=leasehackr,cars,swapalease,leasetrader` (marketcheck
+  omitted, quota spent, preserved via source-scoped). PAID still owner-gated.
+
 Env knobs added: `ALR_LH_CONCURRENCY/RETRIES`, `ALR_MC_CONCURRENCY/RETRIES`,
 `ALR_VPIC_CONCURRENCY/BATCH_SIZE`, `ALR_LH_AUTODISCOVER`, `ALR_LH_MAX_PAGES`,
 `ALR_MC_ZIPS/MAKES/PRICE_BANDS/PER_QUERY_CAP`, `ALR_FEATURE_LOG_KEEP`,

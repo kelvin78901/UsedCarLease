@@ -185,8 +185,17 @@ Included adapters: `leasehackr` (Discourse `.json`, real; private-transfers boar
 by default — regional "marketplace" boards are broker ads with ~0 real transfers,
 opt in via `ALR_LH_AUTODISCOVER=1`; polite rate-limited with a deal-sheet quality
 gate), `marketcheck` (used-car inventory API, real; concurrent zip/make/price
-sweep), `swapalease` / `leasetrader` (Playwright, unverified placeholders), `cars`
-(Playwright, optional), `seed` (deterministic offline generator for dev/CI).
+sweep), `cars` (Cars.com used-car inventory, real — parses the page's embedded
+`srp_results` JSON for vin/price/mileage/body/CPO, paginated), `swapalease` /
+`leasetrader` (Playwright + stealth; reachable but their placeholder selectors
+are stale → emit 0 today), `seed` (offline generator for dev/CI). Concurrent
+headless-browser launches are serialized by a lock; Chromium runs via
+`channel="chromium"` (the default headless shell segfaults in some containers).
+
+The dashboard splits **Leases / Used cars / All** (tabs → `listing_type`): used
+cars (marketcheck + cars) lead with sale price + an "est. finance pmt @7.5%/72mo"
+label; leases keep the real effective-$/mo logic. Used cars carry a **CPO** badge
++ a "CPO only" filter; `/stats` reports `by_type` and `used_cpo`.
 
 ---
 
