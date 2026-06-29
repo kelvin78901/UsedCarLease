@@ -50,6 +50,11 @@ ZIPS = [z.strip() for z in os.getenv("ALR_MC_ZIPS", ZIP).split(",") if z.strip()
 MAKES = [m.strip() for m in os.getenv("ALR_MC_MAKES", "").split(",") if m.strip()]
 BANDS = [b.strip() for b in os.getenv("ALR_MC_PRICE_BANDS", "").split(",") if b.strip()]
 PER_QUERY_CAP = int(os.getenv("ALR_MC_PER_QUERY_CAP", "1500"))   # API hard cap / query
+# Hard cap on API calls THIS run (quota discipline). Plus context for the
+# cumulative print so we never burn through the 500/mo budget.
+MAX_CALLS = int(os.getenv("ALR_MC_MAX_CALLS", "100000"))
+USED_THIS_MONTH = int(os.getenv("ALR_MC_USED_THIS_MONTH", "0"))
+MONTHLY_QUOTA = int(os.getenv("ALR_MC_MONTHLY_QUOTA", "500"))
 
 
 def _hp_from_build(b: dict) -> int:
@@ -159,6 +164,16 @@ class MarketcheckAdapter(BaseAdapter):
                 pending.append((s, start))
                 start += PAGE
 
+        # hard call cap (quota discipline): probes already cost len(plan) calls;
+        # only schedule as many pending pages as the remaining call budget allows.
+        pending = pending[:max(0, MAX_CALLS - len(plan))]
+        calls_used = len(plan) + len(pending)
+        cumulative = USED_THIS_MONTH + calls_used
+        print(f"[marketcheck] sweep slices={len(plan)} probe_calls={len(plan)} "
+              f"page_calls={len(pending)} calls_used={calls_used} "
+              f"cumulative_total~{cumulative}/{MONTHLY_QUOTA} "
+              f"remaining~{MONTHLY_QUOTA - cumulative}")
+
         # phase 2: fetch the queued pages concurrently; still slice at append.
         for listings, _ in await asyncio.gather(*(self._page(s, st) for s, st in pending)):
             if budget <= 0:
@@ -168,10 +183,8 @@ class MarketcheckAdapter(BaseAdapter):
             budget -= len(take)
 
         out = [r for r in (self._to_raw(L) for L in rows) if r]
-        calls = len(plan) + len(pending)
-        print(f"[marketcheck] sweep slices={len(plan)} calls~{calls} "
-              f"pulled={len(rows)} -> {len(out)} rankable "
-              f"(free tier budget = 500 calls/mo)")
+        print(f"[marketcheck] sweep done: calls_used={calls_used} "
+              f"cumulative~{cumulative}/{MONTHLY_QUOTA} pulled={len(rows)} -> {len(out)} rankable")
         return out
 
     @staticmethod
