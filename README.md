@@ -142,7 +142,7 @@ offline. Scrapers respect each site's terms — this is a personal-use system.
 | Method | Path | Notes |
 |---|---|---|
 | GET  | `/stats` | market pulse: active count, median/min effective $/mo, body mix, active ranker |
-| GET  | `/top_deals` | full 4-stage rank; query params `budget, bodies, listing_type, cpo_only, want_awd, want_lux, min_mpm, max_months, states, pref_states, sort, near, top_k`. `bodies` empty = all types; `listing_type`=`all\|lease\|used`; **`states`** = hard filter (vs `pref_states` soft +8); **`sort`**=`score\|price_asc\|price_desc\|newest\|distance` (`distance` needs `near=<state>` — state-level proximity, the data has no dealer lat/lng); `max_months` defaults 120 so financed used cars aren't excluded. |
+| GET  | `/top_deals` | full 4-stage rank; query params `budget, bodies, listing_type, cpo_only, want_awd, want_lux, min_mpm, max_months, states, pref_states, sort, near, q, makes, year_min, year_max, odo_max, price_min, price_max, awd_only, top_k`. `bodies` empty = all types; `listing_type`=`all\|lease\|used`; **`q`** = free-text AND search over make/model/body/flags (e.g. `mach-e`, `denali`, `subaru awd`); **`states`/`makes`** = hard filters; year/mileage/price ranges are used-car filters; **`sort`**=`score\|price_asc\|price_desc\|newest\|distance` (`distance` needs `near=<state>` — state-level proximity, the data has no dealer lat/lng). |
 | POST | `/recommend` | same, JSON body (`PrefBody`) |
 | GET  | `/vehicle/{vin}` | one decoded + scored listing |
 | POST | `/reload` | re-read snapshot + model from disk |
@@ -186,7 +186,8 @@ by default — regional "marketplace" boards are broker ads with ~0 real transfe
 opt in via `ALR_LH_AUTODISCOVER=1`; polite rate-limited with a deal-sheet quality
 gate), `marketcheck` (used-car inventory API, real; concurrent zip/make/price
 sweep), `cars` (Cars.com used-car inventory, real — parses the page's embedded
-`srp_results` JSON for vin/price/mileage/body/CPO, paginated), `swapalease` /
+`srp_results` JSON for vin/price/mileage/body/CPO, paginated; multi-metro via
+`ALR_CARS_ZIPS`), `swapalease` /
 `leasetrader` (Playwright + stealth; reachable but their placeholder selectors
 are stale → emit 0 today), `seed` (offline generator for dev/CI). Concurrent
 headless-browser launches are serialized by a lock; Chromium runs via

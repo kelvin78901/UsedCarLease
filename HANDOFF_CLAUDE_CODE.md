@@ -11,6 +11,36 @@ crawled concurrently.
 
 ---
 
+## Latest iteration — DMV expansion (line A) + search/filter/UI (line B)
+
+**Line A (used-car volume, DMV + PA focus).**
+- Per-source truth: `marketcheck 3298, cars 64, leasehackr 7`; swapalease/leasetrader
+  **reachable but stale selectors → 0** (page loads, e.g. `title='LeaseTrader.com'`;
+  NOT WAF, no proxy needed — they need selector reverse-engineering).
+- **Marketcheck DMV sweep** (8 zips DC/Baltimore/Fairfax/Richmond/Philly/Pittsburgh/
+  Harrisburg/Wilmington × 4 price bands): pulled 3400 → **3397 unique**, replaced the
+  old 3298 (source-scoped). `ALR_MC_MAX_CALLS` hard-caps calls + prints
+  `calls_used / cumulative~N/500`. **Free tier caps radius at 100mi** (150 → 422
+  "radius limit of 100 miles exceeded"). Sweep spent ~140 calls (cumulative ~475/500).
+  New data quality: year/price/dealer_city **3397/3397**, odometer 3388, states
+  VA 1759 / MD 834 / PA 589 / DE 200 / NJ 11 / DC 4.
+- **Cars.com multi-zip** (`ALR_CARS_ZIPS`, DMV metros). Note: cars.com uses
+  `maximum_distance=all` (national pool, nearest-first) so nearby metros overlap →
+  216 raw dedup to ~73 unique. Modest.
+- **Label fix:** a source-scoped re-crawl makes replaced VINs look "sold-fast" →
+  degenerate (~92% grade-4) outcome labels that INVERTED the live ranking. `retrain()`
+  now rejects degenerate label dists (one grade >70%) → value_edge bootstrap; ranking
+  recovered (top-decile value_edge +80% vs bottom). See [[autoleaserank-scale-engagement]].
+
+**Line B (search + filter + UI).** `/top_deals` gained `q` (free-text AND over
+make/model/body/flags), `makes`, `year_min/max`, `odo_max`, `price_min/max`, `awd_only`;
+`/stats` gained `by_make` + `year_range`. Frontend: debounced search box, used-tab
+Year/Mileage/Price sliders + Make multi-select + AWD/CPO-only, body-chip collapse
+(top 6 + more), responsive `.layout` (no overflow at 700px). Verified: q=denali→10,
+wrx→9 (Subaru WRX), year_min=2022→1837, awd_only→2410.
+
+---
+
 ## 0. STATUS — updated 2026-06-29 (P0 + P1 + P2-bonus shipped)
 
 The concurrency/scale work in §6 is **done** (git: baseline → P0 → P1 → P2-bonus,
