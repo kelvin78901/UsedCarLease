@@ -45,9 +45,16 @@ def bootstrap(listings: list[EnrichedListing]):
     for body, group_listings in by_body.items():
         if len(group_listings) < 3:
             continue
+        # Grade by within-segment value_edge (genuinely varies with price), with
+        # the frontier + deal_score as tie-breakers. The old key was deal_score
+        # alone, which saturates on homogeneous used cars (value_edge*200 + small
+        # bonuses) -> near-identical scores -> arbitrary ranks -> degenerate labels
+        # -> the model couldn't tell used cars apart.
         scored = sorted(
             group_listings,
-            key=lambda l: rules.deal_score(l, l.listing_key in front),
+            key=lambda l: (l.value_edge,
+                           l.listing_key in front,
+                           rules.deal_score(l, l.listing_key in front)),
             reverse=True,
         )
         n = len(scored)

@@ -94,9 +94,14 @@ def rank(listings: list[EnrichedListing], prefs: Prefs,
     raw_ltr = {}
     if ltr_scorer is not None and filtered:
         vals = {l.listing_key: float(ltr_scorer(l)) for l in filtered}
-        lo, hi = min(vals.values()), max(vals.values())
-        span = (hi - lo) or 1.0
-        raw_ltr = {k: 2 + 97 * (v - lo) / span for k, v in vals.items()}  # -> ~2..99
+        # Percentile-rank normalization (not linear min-max): on near-homogeneous
+        # used cars the raw LTR outputs cluster tightly near the top, so min-max
+        # squashed every displayed score to 96-99. Ranking instead spreads the
+        # display evenly across 1..99 (lowest raw -> 1, highest -> 99) so the order
+        # is legible. Ties get adjacent ranks. Relative to the current filtered set.
+        order = sorted(vals, key=lambda k: vals[k])           # ascending raw score
+        n = len(order)
+        raw_ltr = {k: round(1 + 98 * i / max(1, n - 1), 1) for i, k in enumerate(order)}
 
     scored: list[ScoredListing] = []
     for l in filtered:
