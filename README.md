@@ -69,12 +69,17 @@ runs a concurrent **sweep** over `(zip × make × price-band)` slices with a glo
 row budget enforced at append time, deduped by VIN downstream.
 
 Concurrency makes the crawl fast, but it can't manufacture inventory. Honest
-free-source ceiling (no paid tier, no proxies): **one-time ~15–20k** listings —
-~95% of it a single Marketcheck-Free monthly-quota burn (500 calls/mo × 50
-rows); **repeatable ~1–3k**. The lease-transfer forums total only a few hundred
-to ~1.5k; that inventory doesn't exist at 10k+ scale. Reaching 10k–100k
-*repeatably* needs **Marketcheck Standard** (the sweep code already supports it —
-just widen `ALR_MC_ZIPS/MAKES/PRICE_BANDS`) and/or a Playwright + proxy cluster.
+free-source ceiling (no paid tier, no proxies), **measured**: a single fast
+Marketcheck-Free sweep yields **~3–4k distinct** — the Free tier **rate-limits
+the burst (429)** so most of a 500-call sweep fails after retries (raise
+`ALR_MC_DELAY` / lower `ALR_MC_CONCURRENCY` to throttle a slower sweep across the
+month toward the ~25k theoretical 500-call cap). The lease-transfer forums add
+only a few hundred. So realistic free volume is **~3–4k per burst, ~1–3k
+repeatable**; 10k+ doesn't exist on free sources. After a Free burn the quota is
+spent, so **source-scoped snapshots** keep the swept inventory served while
+leasehackr keeps refreshing. Reaching 10k–100k *repeatably* needs **Marketcheck
+Standard** (the sweep code already supports it — just widen
+`ALR_MC_ZIPS/MAKES/PRICE_BANDS`) and/or a Playwright + proxy cluster.
 
 ---
 

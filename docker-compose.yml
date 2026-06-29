@@ -21,7 +21,12 @@ services:
     environment:
       ALR_INPROCESS_SCHEDULER: "1"
       ALR_CRAWL_INTERVAL_MIN: "180"            # quota-safe cadence
-      ALR_ADAPTERS: "leasehackr,marketcheck"   # add swapalease,leasetrader,cars as desired
+      # After the one-time Marketcheck Free full-sweep burn, the monthly quota is
+      # spent, so the scheduler runs leasehackr-only -- source-scoped snapshots
+      # keep the swept marketcheck inventory served while leasehackr stays fresh.
+      # Restore "leasehackr,marketcheck" once the quota resets next month (or on a
+      # paid tier). Swapalease/leasetrader/cars can be added but are WAF-walled.
+      ALR_ADAPTERS: "leasehackr"
       ALR_MC_MAX_ROWS: "50"                    # quota-safe per crawl (Free = 500 calls/mo)
       ALR_USE_LTR: "auto"
     volumes:

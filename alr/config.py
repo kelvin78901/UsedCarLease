@@ -28,6 +28,7 @@ LH_CONCURRENCY = int(os.getenv("ALR_LH_CONCURRENCY", "2"))   # Discourse 429s ea
 LH_DELAY = float(os.getenv("ALR_LH_DELAY", "0.5"))          # politeness sleep per request
 LH_RETRIES = int(os.getenv("ALR_LH_RETRIES", "3"))
 MC_CONCURRENCY = int(os.getenv("ALR_MC_CONCURRENCY", "3"))   # keep low: free tier
+MC_DELAY = float(os.getenv("ALR_MC_DELAY", "0"))            # per-request sleep; raise for big Free sweeps (429s)
 MC_RETRIES = int(os.getenv("ALR_MC_RETRIES", "3"))
 VPIC_CONCURRENCY = int(os.getenv("ALR_VPIC_CONCURRENCY", "2"))
 USER_AGENT = os.getenv(

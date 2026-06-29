@@ -64,6 +64,23 @@ the `vin;year|...` written in §4.1 — the wrong format silently returns garbag
   `monthly=$1` / `MSRP=$4` ranked #1. End-to-end live in Docker now serves clean,
   real transfers + Marketcheck inventory through the 4-stage LTR rank.
 
+**Live deploy round (real crawl常驻 + Free full-sweep burn):**
+- Compose crawls **live by default** (key from gitignored `.env`); the in-process
+  scheduler runs an **initial crawl on boot** + every 180min and **retrains
+  daily** (`rank/retrain.py`, auto outcome-vs-bootstrap labels). Two more parse
+  bugs fixed (color-as-make → alias table; trailing `|`/`/`).
+- **Snapshots are now source-scoped** (`store/db.py`): a crawl replaces only the
+  sources it returned (+ purges `seed`), so a big one-time sweep survives later
+  small crawls. `labels_from_history` is source-aware to match.
+- **Marketcheck Free full sweep, measured:** a fast 96-slice / ~520-call burst
+  yielded only **~3,300 distinct** — the Free tier **rate-limits hard (429)**, so
+  most calls fail after retries. The "~15–20k one-time" estimate was optimistic;
+  realistic free burst ≈ 3–4k (throttle via `ALR_MC_DELAY` / lower
+  `ALR_MC_CONCURRENCY` to spread a slower sweep toward the 500-call/25k cap). The
+  ~3.3k is now **served live** (`/stats active≈3305`); compose runs leasehackr-only
+  for the burn month so source-scoped preserves it. Restore `leasehackr,marketcheck`
+  next month / on Standard. Owner declined paid (Standard/proxies) for now.
+
 Env knobs added: `ALR_LH_CONCURRENCY/RETRIES`, `ALR_MC_CONCURRENCY/RETRIES`,
 `ALR_VPIC_CONCURRENCY/BATCH_SIZE`, `ALR_LH_AUTODISCOVER`, `ALR_LH_MAX_PAGES`,
 `ALR_MC_ZIPS/MAKES/PRICE_BANDS/PER_QUERY_CAP`, `ALR_FEATURE_LOG_KEEP`,

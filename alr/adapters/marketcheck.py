@@ -30,7 +30,7 @@ import re
 from datetime import datetime, timezone
 
 from .base import BaseAdapter, adapter
-from ..config import MC_CONCURRENCY, MC_RETRIES
+from ..config import MC_CONCURRENCY, MC_DELAY, MC_RETRIES
 from ..schema import RawListing
 
 API = "https://api.marketcheck.com/v2/search/car/active"
@@ -79,6 +79,7 @@ def amortized_monthly(price: float, apr: float = APR, term: int = TERM) -> float
 @adapter("marketcheck")
 class MarketcheckAdapter(BaseAdapter):
     concurrency = MC_CONCURRENCY    # keep low: free tier rate limits
+    request_delay = MC_DELAY        # raise (e.g. 0.3) to throttle a big Free sweep past 429s
     max_retries = MC_RETRIES
 
     @staticmethod
