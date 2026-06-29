@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AutoLeaseRank</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  :root{--ink:#0B0E14;--panel:#141A26;--panel2:#1C2435;--line:#2A3445;
+        --hi:#F2F5F9;--mid:#AEB9CA;--dim:#7E8AA0;--amber:#F4B645;--amberHi:#FFD37A;
+        --teal:#5BD9CB;--red:#F07A63;--violet:#9C8BF5}
+  *{box-sizing:border-box;-webkit-font-smoothing:antialiased}
+  body{margin:0;background:var(--ink);color:var(--hi);font-family:'Inter',sans-serif}
+  a{color:inherit}
+  .fd{font-family:'Space Grotesk','Inter',sans-serif}
+  .fm{font-family:'JetBrains Mono',monospace;font-feature-settings:'tnum'}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:#2A3445;border-radius:4px}
+  input[type=range]{accent-color:var(--amber)}
+  button{font-family:inherit;cursor:pointer}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .dot{animation:pulse 2s ease-in-out infinite}
+  .lnk{color:var(--teal);text-decoration:none}
+  .lnk:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+const API = location.origin.includes("file") ? "http://localhost:8000" : "";
+const fmt$ = n => "$" + Math.round(n).toLocaleString();
+const SRC = {leasehackr:"#F4B645",marketcheck:"#5BD9CB",swapalease:"#9C8BF5",
+             leasetrader:"#9C8BF5",seed:"#AEB9CA"};
+const nav = key => { window.location.hash = "#/v/" + encodeURIComponent(key); };
+
+/* ---- model SHAP driver bars: the model's own 'why' ---- */
+function Drivers({drivers}){
+  if(!drivers || !drivers.length)
+    return <div style={{color:"var(--dim)",fontSize:11.5}}>No model loaded — ranked by rules.</div>;
+  const max = Math.max(...drivers.map(d=>Math.abs(d[1]))) || 1;
+  return <div style={{display:"flex",flexDirection:"column",gap:5}}>
+    {drivers.map(([lab,v],i)=>{
+      const pos=v>=0, w=Math.max(4,Math.abs(v)/max*100);
+      return <div key={i} style={{display:"flex",alignItems:"center",gap:8}}>
+        <span className="fm" style={{width:96,fontSize:10.5,color:"var(--mid)",textAlign:"right",
+          flexShrink:0}}>{lab}</span>
+        <div style={{flex:1,height:9,background:"#0E1320",borderRadius:3,position:"relative",overflow:"hidden"}}>
+          <div style={{position:"absolute",left:0,top:0,bottom:0,width:w+"%",
+            background:pos?"var(--amber)":"var(--red)",opacity:.85,borderRadius:3}}/>
+        </div>
+        <span className="fm" style={{width:42,fontSize:10,color:pos?"var(--amberHi)":"var(--red)"}}>
+          {pos?"+":""}{v.toFixed(2)}</span>
+      </div>;
+    })}
+  </div>;
+}
+
+function Scatter({deals,selected}){
+  const W=360,H=190,pad={l:40,r:12,t:12,b:28};
+  if(!deals.length) return <div style={{color:"var(--dim)",fontSize:12,padding:20}}>No deals to plot.</div>;
+  const xs=deals.map(d=>d.effective_monthly), ys=deals.map(d=>d.hp);
+  const xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(...ys),ymax=Math.max(...ys);
+  const xr=(xmax-xmin)||1, yr=(ymax-ymin)||1;
+  const X=v=>pad.l+(v-xmin)/xr*(W-pad.l-pad.r);
+  const Y=v=>H-pad.b-(v-ymin)/yr*(H-pad.t-pad.b);
+  const front=deals.filter(d=>d.on_frontier).sort((a,b)=>a.effective_monthly-b.effective_monthly);
+  const dom=deals.filter(d=>!d.on_frontier);
+  const yt=[ymin,(ymin+ymax)/2,ymax], xt=[xmin,(xmin+xmax)/2,xmax];
+  return <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" style={{display:"block"}}>
+    {yt.map((t,i)=><g key={"y"+i}>
+      <line x1={pad.l} x2={W-pad.r} y1={Y(t)} y2={Y(t)} stroke="#2A3445" strokeDasharray="2 4"/>
+      <text x={pad.l-6} y={Y(t)+3} fill="#9CA8BC" fontSize="9" textAnchor="end" className="fm">{Math.round(t)}</text>
+    </g>)}
+    {xt.map((t,i)=><text key={"x"+i} x={X(t)} y={H-9} fill="#9CA8BC" fontSize="9" textAnchor="middle" className="fm">${Math.round(t)}</text>)}
+    <text x={pad.l} y={H-1} fill="#9CA8BC" fontSize="8.5" className="fm">effective $/mo  →  power (hp) ↑</text>
+    {front.length>1 && <polyline fill="none" stroke="#F4B645" strokeWidth="1"
+      points={front.map(d=>`${X(d.effective_monthly)},${Y(d.hp)}`).join(" ")}/>}
+    {dom.map((d,i)=><circle key={"d"+i} cx={X(d.effective_monthly)} cy={Y(d.hp)} r="3" fill="#8090A6" fillOpacity="0.7"/>)}
+    {front.map((d,i)=><circle key={"f"+i} cx={X(d.effective_monthly)} cy={Y(d.hp)} r="3.6" fill="#F4B645"/>)}
+    {selected && <rect x={X(selected.effective_monthly)-4} y={Y(selected.hp)-4} width="8" height="8"
+      fill="#5BD9CB" transform={`rotate(45 ${X(selected.effective_monthly)} ${Y(selected.hp)})`}/>}
+  </svg>;
+}
+
+function CostBreakdown({d}){
+  const rows=[["Base monthly",d.monthly,false],
+    ["One-time fees ÷term",(d.drive_off+d.transfer_fee+d.acquisition_fee+d.disposition_fee)/d.months_remaining,true],
+    ["Seller incentive ÷term",-d.seller_incentive/d.months_remaining,true]];
+  return <div>
+    {rows.map(([t,v],i)=><div key={i} className="fm" style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}>
+      <span style={{color:"var(--mid)"}}>{t}</span>
+      <span style={{color:v<0?"var(--teal)":"var(--hi)"}}>{v<0?"−":"+"}{fmt$(Math.abs(v))}{String(t).includes("term")?"/mo":""}</span></div>)}
+    <div className="fm" style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--line)",
+      marginTop:6,paddingTop:6,fontSize:15,fontWeight:600}}>
+      <span>Effective $/mo</span><span style={{color:"var(--amber)"}}>{fmt$(d.effective_monthly)}</span></div>
+    {d.monthly_is_estimate && <div style={{color:"var(--dim)",fontSize:10,marginTop:4}}>
+      * used-car purchase: monthly is an estimated finance payment</div>}
+  </div>;
+}
+
+function ExternalLink({url,label}){
+  if(!url) return null;
+  return <a className="lnk fm" href={url} target="_blank" rel="noopener noreferrer"
+    onClick={e=>e.stopPropagation()} style={{fontSize:11.5}}>{label||"View original listing"} ↗</a>;
+}
+
+/* ===================== full vehicle sub-page ===================== */
+function VehiclePage({routeKey}){
+  const [d,setD]=useState(null); const [err,setErr]=useState(null);
+  useEffect(()=>{
+    fetch(API+"/listing/"+encodeURIComponent(routeKey)).then(r=>{
+      if(!r.ok) throw new Error(r.status); return r.json();
+    }).then(setD).catch(()=>setErr("Listing not found (it may have rotated out of the latest crawl)."));
+  },[routeKey]);
+
+  return <div style={{maxWidth:880,margin:"0 auto",padding:"20px 24px"}}>
+    <a className="lnk" href="#/" style={{fontSize:13}}>← back to rankings</a>
+    {err && <div style={{color:"var(--red)",marginTop:20}}>{err}</div>}
+    {d && <div style={{marginTop:16}}>
+      <div style={{display:"flex",alignItems:"flex-start",gap:16,flexWrap:"wrap"}}>
+        <div style={{flex:1,minWidth:260}}>
+          <div className="fd" style={{fontSize:26,fontWeight:700}}>{d.make} {d.model}</div>
+          <div className="fm" style={{color:"var(--mid)",fontSize:13,marginTop:4}}>
+            <span style={{color:SRC[d.source]||"var(--mid)"}}>{d.source}</span> · {d.state} ·
+            {" "}{d.hp}hp · {fmt$(d.msrp)} MSRP · {d.msrp_discount_pct}% off · #{d.rank}</div>
+          <div style={{marginTop:8}}><ExternalLink url={d.url}/></div>
+        </div>
+        <div style={{textAlign:"center"}}>
+          <div className="fm" style={{fontSize:46,fontWeight:600,color:"var(--amber)",lineHeight:1}}>
+            {Math.round(d.personalized_score)}</div>
+          <div style={{fontSize:10,color:"var(--dim)",letterSpacing:".08em"}}>
+            {d.scorer==="ltr"?"LAMBDAMART SCORE":"RULES SCORE"}</div>
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginTop:22}}>
+        <Card title="Effective cost build-up"><CostBreakdown d={d}/></Card>
+        <Card title={d.scorer==="ltr"?"Why the model ranked it here":"Why it ranks here"}>
+          <Drivers drivers={d.score_drivers}/>
+          <div style={{color:"var(--mid)",fontSize:11.5,lineHeight:1.5,marginTop:10,
+            borderTop:"1px solid var(--line)",paddingTop:8}}>{d.explanation}</div>
+        </Card>
+      </div>
+
+      <Card title="Listing detail" style={{marginTop:16}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px 18px"}} className="fm">
+          {[["Effective $/mo",fmt$(d.effective_monthly)],["Monthly",fmt$(d.monthly)],
+            ["MSRP",fmt$(d.msrp)],["Term left",d.months_remaining+" mo"],
+            ["Miles left",d.remaining_miles.toLocaleString()],["Miles/mo",d.miles_per_month],
+            ["Drive-off",fmt$(d.drive_off)],["Transfer fee",fmt$(d.transfer_fee)],
+            ["Seller incentive",fmt$(d.seller_incentive)],["Days on market",d.days_on_market],
+            ["vs-market edge",Math.round(d.value_edge*100)+"%"],["On frontier",d.on_frontier?"yes":"no"],
+            ["Body",d.body],["AWD",d.awd?"yes":"no"],["State",d.state]].map(([k,v],i)=>
+            <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:12,
+              borderBottom:"1px solid #1A2230",padding:"4px 0"}}>
+              <span style={{color:"var(--dim)"}}>{k}</span><span>{v}</span></div>)}
+        </div>
+      </Card>
+    </div>}
+  </div>;
+}
+function Card({title,children,style}){
+  return <div style={{background:"var(--panel)",border:"1px solid var(--line)",borderRadius:12,padding:15,...style}}>
+    <div className="fd" style={{fontWeight:600,fontSize:12,color:"var(--mid)",marginBottom:10}}>{title}</div>
+    {children}</div>;
+}
+
+/* ===================== dashboard ===================== */
+function Pulse({label,value,accent}){
+  return <div style={{display:"flex",flexDirection:"column",lineHeight:1.1}}>
+    <span style={{color:"var(--dim)",fontSize:9,letterSpacing:".08em"}}>{label}</span>
+    <span style={{color:accent||"var(--hi)",fontWeight:600}}>{value}</span></div>;
+}
+function Chip({on,onClick,children,sm}){
+  return <button onClick={onClick} className="fm" style={{fontSize:sm?11:12,
+    padding:sm?"3px 8px":"5px 11px",borderRadius:7,border:"1px solid "+(on?"var(--amber)":"var(--line)"),
+    color:on?"var(--ink)":"var(--mid)",background:on?"var(--amber)":"transparent",fontWeight:on?600:400}}>
+    {children}</button>;
+}
+function Stage({i,t,n,col}){
+  return <div style={{flex:1,background:"var(--panel)",border:"1px solid var(--line)",borderRadius:9,padding:"9px 12px"}}>
+    <div style={{color:"var(--dim)",fontSize:9.5,letterSpacing:".06em"}} className="fm">{"S"+i+" · "+t}</div>
+    <div className="fm" style={{color:col,fontSize:20,fontWeight:600,marginTop:1}}>{n}</div></div>;
+}
+
+function Dashboard(){
+  const [budget,setBudget]=useState(900);
+  const [bodies,setBodies]=useState({SUV:true,Sedan:true,EV:true});
+  const [wantAwd,setAwd]=useState(false);
+  const [wantLux,setLux]=useState(false);
+  const [prefStates,setStates]=useState({});
+  const [data,setData]=useState({deals:[],counts:{}});
+  const [stats,setStats]=useState({});
+  const [sel,setSel]=useState(null);
+  const [err,setErr]=useState(null);
+
+  useEffect(()=>{fetch(API+"/stats").then(r=>r.json()).then(setStats).catch(()=>{});},[]);
+  useEffect(()=>{
+    const b=Object.keys(bodies).filter(k=>bodies[k]).join(",");
+    const ps=Object.keys(prefStates).filter(k=>prefStates[k]).join(",");
+    const q=`budget=${budget}&bodies=${b}&want_awd=${wantAwd}&want_lux=${wantLux}&pref_states=${ps}&top_k=40`;
+    fetch(API+"/top_deals?"+q).then(r=>r.json()).then(d=>{setData(d);setErr(null);})
+      .catch(()=>setErr("API not reachable. Start it: uvicorn alr.api.main:app"));
+  },[budget,bodies,wantAwd,wantLux,prefStates]);
+
+  const deals=data.deals||[];
+  const selected = sel ? deals.find(d=>d.listing_key===sel)||deals[0] : deals[0];
+  const c=data.counts||{};
+
+  return <div>
+    <div style={{position:"sticky",top:0,zIndex:9,borderBottom:"1px solid var(--line)",background:"var(--ink)",
+      padding:"12px 20px",display:"flex",alignItems:"center",gap:24,flexWrap:"wrap"}}>
+      <span className="fd" style={{fontWeight:700,fontSize:17,letterSpacing:"-.02em"}}>
+        AutoLease<span style={{color:"var(--amber)"}}>Rank</span></span>
+      <span className="fm" style={{color:"var(--dim)",fontSize:10,border:"1px solid var(--line)",padding:"1px 6px",borderRadius:4}}>
+        {stats.ranker==="ltr"?"LambdaMART · model-scored":"rules"}&nbsp;·&nbsp;live</span>
+      <div style={{marginLeft:"auto",display:"flex",gap:20}} className="fm">
+        <Pulse label="ACTIVE" value={stats.active??"—"}/>
+        <Pulse label="MEDIAN $/MO" value={stats.median_effective?fmt$(stats.median_effective):"—"}/>
+        <Pulse label="ON FRONTIER" value={c.frontier??"—"} accent="var(--amber)"/>
+        <div style={{display:"flex",alignItems:"center",gap:6,color:"var(--mid)",fontSize:11.5}}>
+          <span className="dot" style={{width:6,height:6,borderRadius:9,background:"var(--teal)"}}></span>crawl · 30m</div>
+      </div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"236px 1fr 392px"}}>
+      <div style={{borderRight:"1px solid var(--line)",padding:16,minHeight:"calc(100vh - 53px)"}}>
+        <div className="fd" style={{fontWeight:600,fontSize:12,marginBottom:4}}>Re-rank for me</div>
+        <div style={{color:"var(--dim)",fontSize:11,marginBottom:16}}>Every change recomputes the pipeline server-side.</div>
+        <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",letterSpacing:".04em"}}>Max effective $/mo</div>
+        <div className="fm" style={{color:"var(--amber)",fontSize:22,fontWeight:600}}>{fmt$(budget)}</div>
+        <input type="range" min="350" max="1400" step="25" value={budget}
+          onChange={e=>setBudget(+e.target.value)} style={{width:"100%",marginTop:6}}/>
+        <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",marginTop:18,letterSpacing:".04em"}}>Body type</div>
+        <div style={{display:"flex",gap:6,marginTop:8}}>
+          {["SUV","Sedan","EV"].map(b=><Chip key={b} on={bodies[b]} onClick={()=>setBodies(s=>({...s,[b]:!s[b]}))}>{b}</Chip>)}
+        </div>
+        <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",marginTop:18,letterSpacing:".04em"}}>Boost</div>
+        <div style={{display:"flex",gap:6,marginTop:8}}>
+          <Chip on={wantAwd} onClick={()=>setAwd(v=>!v)}>AWD +7</Chip>
+          <Chip on={wantLux} onClick={()=>setLux(v=>!v)}>Luxury +6</Chip>
+        </div>
+        <div style={{color:"var(--mid)",fontSize:10.5,textTransform:"uppercase",marginTop:18,letterSpacing:".04em"}}>Preferred states +8</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:8}}>
+          {["CA","NY","NJ","TX","WA","MA","FL","IL"].map(s=>
+            <Chip key={s} sm on={prefStates[s]} onClick={()=>setStates(p=>({...p,[s]:!p[s]}))}>{s}</Chip>)}
+        </div>
+      </div>
+
+      <div style={{padding:16,minWidth:0}}>
+        <div style={{display:"flex",gap:8}}>
+          <Stage i={1} t="CRAWLED" n={c.crawled??"—"} col="var(--mid)"/>
+          <div style={{alignSelf:"center",color:"var(--dim)"}}>›</div>
+          <Stage i={2} t="FILTERED" n={c.filtered??"—"} col="var(--teal)"/>
+          <div style={{alignSelf:"center",color:"var(--dim)"}}>›</div>
+          <Stage i={3} t="FRONTIER" n={c.frontier??"—"} col="var(--amber)"/>
+          <div style={{alignSelf:"center",color:"var(--dim)"}}>›</div>
+          <Stage i={4} t="MODEL-RANKED" n={c.ranked??"—"} col="var(--amberHi)"/>
+        </div>
+        {err && <div style={{color:"var(--red)",fontSize:12,marginTop:14,border:"1px dashed var(--line)",
+          borderRadius:8,padding:12}}>{err}</div>}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",margin:"16px 4px 8px"}}>
+          <div className="fd" style={{fontWeight:600,fontSize:14}}>Ranked deals
+            <span style={{color:"var(--dim)",fontWeight:400}}> · {deals.length}</span></div>
+          <span className="fm" style={{color:"var(--dim)",fontSize:10}}>click a row for details · ↗ opens listing</span>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {deals.map(d=>{
+            const active=selected&&selected.listing_key===d.listing_key;
+            const edge=Math.round(d.value_edge*100);
+            const sc=d.personalized_score;
+            const col=sc>=80?"var(--amber)":sc>=62?"var(--amberHi)":sc>=45?"var(--teal)":"var(--mid)";
+            return <div key={d.listing_key} role="button" tabIndex={0} onClick={()=>setSel(d.listing_key)}
+              style={{textAlign:"left",cursor:"pointer",
+              background:active?"var(--panel2)":"var(--panel)",border:"1px solid "+(active?"var(--amber)":"var(--line)"),
+              borderRadius:11,padding:"11px 13px",display:"flex",alignItems:"center",gap:13}}>
+              <span className="fm" style={{color:"var(--dim)",fontSize:12,width:22}}>{d.rank}</span>
+              <div style={{width:50,textAlign:"center"}}>
+                <div className="fm" style={{fontSize:23,fontWeight:600,color:col,lineHeight:1}}>{Math.round(sc)}</div>
+                <div style={{fontSize:8.5,color:"var(--dim)"}}>{d.scorer==="ltr"?"ML":"SCORE"}</div></div>
+              <div style={{minWidth:0,flex:1}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span className="fd" style={{fontWeight:600,fontSize:13.5}}>{d.make} {d.model}</span>
+                  {d.on_frontier && <span className="fm" style={{fontSize:9,fontWeight:600,color:"var(--amber)",
+                    border:"1px solid #F4B64555",borderRadius:5,padding:"1px 5px"}}>FRONTIER</span>}
+                  {d.seller_incentive>0 && <span className="fm" style={{fontSize:9,fontWeight:600,color:"var(--teal)",
+                    border:"1px solid #5BD9CB55",borderRadius:5,padding:"1px 5px"}}>+{fmt$(d.seller_incentive)}</span>}
+                </div>
+                <div className="fm" style={{display:"flex",gap:12,marginTop:4,color:"var(--mid)",fontSize:11}}>
+                  <span style={{color:SRC[d.source]||"var(--mid)"}}>{d.source}</span>
+                  <span>{d.state}</span><span>{d.hp}hp</span>
+                  <span>{d.months_remaining}mo · {d.remaining_miles.toLocaleString()}mi</span></div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div className="fm" style={{fontSize:18,fontWeight:600}}>{fmt$(d.effective_monthly)}</div>
+                <div className="fm" style={{fontSize:10.5,color:"var(--dim)"}}>eff/mo</div>
+                <div className="fm" style={{fontSize:11,color:edge>=0?"var(--teal)":"var(--red)",marginTop:2}}>
+                  {edge>=0?"▼":"▲"}{Math.abs(edge)}% vs mkt</div></div>
+              <div style={{display:"flex",flexDirection:"column",gap:6,paddingLeft:8,borderLeft:"1px solid var(--line)"}}>
+                <a className="lnk" href={d.url||"#"} target="_blank" rel="noopener noreferrer"
+                  onClick={e=>e.stopPropagation()} title="open original listing"
+                  style={{fontSize:14,textAlign:"center"}}>↗</a>
+                <span onClick={e=>{e.stopPropagation();nav(d.listing_key);}} title="full detail page"
+                  style={{fontSize:13,textAlign:"center",color:"var(--mid)",cursor:"pointer"}}>⤢</span>
+              </div>
+            </div>;
+          })}
+          {deals.length===0 && !err && <div style={{color:"var(--mid)",border:"1px dashed var(--line)",
+            borderRadius:10,padding:30,textAlign:"center"}}>No deals clear the filters. Raise the budget.</div>}
+        </div>
+      </div>
+
+      <div style={{borderLeft:"1px solid var(--line)",padding:16}}>
+        {selected && <div style={{background:"var(--panel)",border:"1px solid #F4B64555",borderRadius:12,padding:15}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div className="fd" style={{fontWeight:700,fontSize:16}}>{selected.make} {selected.model}</div>
+            <span onClick={()=>nav(selected.listing_key)} className="lnk" style={{fontSize:11.5,cursor:"pointer"}}>full page →</span>
+          </div>
+          <div className="fm" style={{color:"var(--mid)",fontSize:11,marginTop:2}}>
+            {fmt$(selected.msrp)} MSRP · {selected.msrp_discount_pct}% off · {selected.hp}hp</div>
+          <div style={{marginTop:6}}><ExternalLink url={selected.url}/></div>
+          <div style={{borderTop:"1px solid var(--line)",marginTop:10,paddingTop:8}}>
+            <CostBreakdown d={selected}/></div>
+          <div style={{background:"var(--panel2)",borderRadius:9,padding:"10px 11px",marginTop:11}}>
+            <div style={{color:"var(--amberHi)",fontSize:11,fontWeight:600,marginBottom:8}}>
+              {selected.scorer==="ltr"?"Model score drivers (SHAP)":"Why it ranks here"}</div>
+            <Drivers drivers={selected.score_drivers}/>
+            <div style={{color:"var(--mid)",fontSize:11.5,lineHeight:1.5,marginTop:8}}>{selected.explanation}</div></div>
+        </div>}
+
+        <div style={{color:"var(--mid)",fontSize:12,fontWeight:600,margin:"22px 0 8px"}} className="fd">Pareto frontier · cost vs power</div>
+        <div style={{height:210,background:"var(--panel)",border:"1px solid var(--line)",borderRadius:10,padding:8}}>
+          <Scatter deals={deals} selected={selected}/>
+        </div>
+        <div style={{color:"var(--dim)",fontSize:11,marginTop:8,lineHeight:1.5}}>
+          Amber points are non-dominated — no listing beats them on both cost and power. The teal diamond is your selection.</div>
+      </div>
+    </div>
+  </div>;
+}
+
+/* ===================== router ===================== */
+function App(){
+  const [hash,setHash]=useState(window.location.hash);
+  useEffect(()=>{
+    const f=()=>setHash(window.location.hash);
+    window.addEventListener("hashchange",f);
+    return ()=>window.removeEventListener("hashchange",f);
+  },[]);
+  const m=hash.match(/^#\/v\/(.+)$/);
+  if(m) return <VehiclePage routeKey={decodeURIComponent(m[1])}/>;
+  return <Dashboard/>;
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

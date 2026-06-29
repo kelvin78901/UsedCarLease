@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS always-on service. Edit the two PATHs, then:
+     cp deploy/com.autoleaserank.plist ~/Library/LaunchAgents/
+     launchctl load ~/Library/LaunchAgents/com.autoleaserank.plist
+     launchctl start com.autoleaserank
+     (stop:  launchctl unload ~/Library/LaunchAgents/com.autoleaserank.plist) -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.autoleaserank</string>
+  <key>WorkingDirectory</key><string>/Users/kelvin/Downloads/autoleaserank</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/miniconda3/envs/whisper/bin/uvicorn</string>
+    <string>alr.api.main:app</string>
+    <string>--host</string><string>0.0.0.0</string>
+    <string>--port</string><string>8000</string>
+    <string>--workers</string><string>1</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>ALR_INPROCESS_SCHEDULER</key><string>1</string>
+    <key>ALR_ADAPTERS</key><string>leasehackr,marketcheck</string>
+    <key>ALR_MARKETCHECK_KEY</key><string>PUT_YOUR_KEY_HERE</string>
+    <key>ALR_MC_MAX_ROWS</key><string>50</string>
+    <key>ALR_MC_ZIP</key><string>20001</string>
+    <key>ALR_CRAWL_INTERVAL_MIN</key><string>180</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/autoleaserank.log</string>
+  <key>StandardErrorPath</key><string>/tmp/autoleaserank.err</string>
+</dict></plist>

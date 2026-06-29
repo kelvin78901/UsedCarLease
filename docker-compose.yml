@@ -1,0 +1,27 @@
+# Single service on purpose: DuckDB is an embedded single-process store, so the
+# crawl scheduler runs inside the API process (ALR_INPROCESS_SCHEDULER=1) rather
+# than a second container contending for the file lock.
+#
+#   docker compose up --build      -> http://localhost:8000
+#
+# Out of the box it crawls the offline `seed` adapter so it works with zero
+# network. To pull real listings, set ALR_ADAPTERS to live adapters below.
+
+services:
+  autoleaserank:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      ALR_INPROCESS_SCHEDULER: "1"
+      ALR_CRAWL_INTERVAL_MIN: "30"
+      # offline default. For live data use:
+      #   ALR_ADAPTERS: "leasehackr,swapalease,leasetrader"
+      ALR_ADAPTERS: "seed"
+      ALR_USE_LTR: "auto"
+    volumes:
+      - alr-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  alr-data:

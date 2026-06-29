@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autoleaserank"
+version = "0.4.0"
+description = "Learning-to-Rank market-intelligence platform for lease deal discovery"
+requires-python = ">=3.10"
+dependencies = [
+    "polars>=1.0",
+    "duckdb>=1.0",
+    "lightgbm>=4.0",
+    "numpy>=1.26",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "httpx>=0.27",
+    "selectolax>=0.3",
+    "apscheduler>=3.10",
+]
+
+[project.optional-dependencies]
+playwright = ["playwright>=1.40"]
+
+[project.scripts]
+alr-crawl = "alr.pipeline.run:crawl"
+alr-schedule = "alr.scheduler:main"
+
+[tool.setuptools.packages.find]
+include = ["alr*"]
