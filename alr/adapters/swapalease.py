@@ -29,6 +29,13 @@ _CHALLENGE = re.compile(r"just a moment|checking your browser|cf-challenge|"
                         r"verify you are human|access denied", re.I)
 
 
+# LeaseTrader throttles repeated hits -> a polite pre-load pause + exponential
+# backoff on the load. The Playwright subprocess hard-timeout is the outer guard,
+# so even a fully blocked load just emits 0 without stalling the crawl.
+LT_DELAY = float(os.getenv("ALR_LT_DELAY", "2.0"))     # base backoff seconds
+LT_RETRIES = int(os.getenv("ALR_LT_RETRIES", "3"))     # load attempts
+
+
 def _money(s):
     if not s:
         return None
@@ -152,12 +159,25 @@ class LeaseTraderAdapter(BaseAdapter):
                 ctx = br.new_context(user_agent=_UA, locale="en-US",
                                      viewport={"width": 1366, "height": 900})
                 page = ctx.new_page()
-                page.goto(self.LIST_URL, wait_until="domcontentloaded", timeout=45000)
-                try:
-                    page.wait_for_selector("div.for_grid", timeout=20000)
-                except Exception:
-                    if not _blocked(page, "leasetrader"):
-                        print(f"[leasetrader] no cards: title={page.title()!r} -> emit 0")
+                # polite pre-load pause + exponential backoff: leasetrader.com
+                # rate-limits bursts; back off rather than hammer (which is what got
+                # us throttled). Normal case succeeds on attempt 1.
+                loaded = False
+                for attempt in range(LT_RETRIES):
+                    page.wait_for_timeout(int(LT_DELAY * 1000 * (2 ** attempt)))  # 2s,4s,8s
+                    try:
+                        page.goto(self.LIST_URL, wait_until="domcontentloaded", timeout=35000)
+                        page.wait_for_selector("div.for_grid", timeout=12000)
+                        loaded = True
+                        break
+                    except Exception:
+                        if _blocked(page, "leasetrader"):
+                            br.close()
+                            return []
+                        print(f"[leasetrader] load attempt {attempt + 1}/{LT_RETRIES} "
+                              f"empty (rate-limited?) -> backing off")
+                if not loaded:
+                    print(f"[leasetrader] no cards after {LT_RETRIES} tries -> emit 0")
                     br.close()
                     return []
                 # the Angular list lazy-loads on scroll; pull a few batches
