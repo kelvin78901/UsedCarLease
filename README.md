@@ -1,10 +1,10 @@
 # AutoLeaseRank
 
-A market-intelligence platform that aggregates vehicle lease listings, computes
-the **true effective cost** of each deal, and ranks them with **Learning-to-Rank**
-instead of heuristic sorting. Ships with a connected dashboard, a FastAPI
-backend, a LambdaMART ranker, and a plugin adapter layer so the same engine can
-later point at any marketplace, not just cars.
+A market-intelligence platform that aggregates **used-car listings and lease
+transfers** from several sources, puts every deal on one honest cost axis, and
+ranks them with **Learning-to-Rank** (LambdaMART + SHAP) instead of heuristic
+sorting. Ships with a connected no-build dashboard, a FastAPI backend, and a
+plugin adapter layer so the same engine can point at any marketplace.
 
 ```
 http://localhost:8000      ← dashboard + API after `docker compose up`
@@ -14,11 +14,14 @@ http://localhost:8000      ← dashboard + API after `docker compose up`
 
 ## Why this exists
 
-Lease listings are scattered across platforms that expose different fields, and
-the advertised monthly payment hides one-time fees, incentives, and transfer
-costs. Sorting by monthly payment is misleading. AutoLeaseRank puts every
-listing on one honest axis — **effective monthly cost** — and then learns to
-order deals by quality.
+Car listings are scattered across platforms that expose different fields, and the
+advertised number hides the real cost — one-time fees and incentives on a lease
+transfer, an unrealistic 72-month amortization on a 20-year-old used car. Sorting
+by the sticker number is misleading. AutoLeaseRank puts every listing on one
+honest axis and then learns to order deals by **value relative to comparable
+cars**, not by absolute cheapness.
+
+**Lease transfers** carry their true monthly cost:
 
 ```
 effective_monthly = monthly
@@ -26,103 +29,89 @@ effective_monthly = monthly
                      + acquisition_fee − seller_incentive) / months_remaining
 ```
 
-A seller incentive (cash to assume the lease) is negative cost. This single
-number is the backbone of every downstream feature.
+A seller incentive (cash to assume the lease) is negative cost. **Used cars** get
+an age-realistic finance payment (the term shrinks with age — no fake $104/mo on a
+2006), then both are scored against their **peer group**, below.
 
 ---
 
 ## Architecture
 
 ```
-   Adapters (plugin)          leasehackr · swapalease · leasetrader · cars · seed
-        │  RawListing
+   Adapters (plugin)     marketcheck · cars · leasehackr · swapalease · leasetrader · seed
+        │  RawListing            (browser adapters run in isolated subprocesses)
         ▼
-   Normalize ─► Dedup ─► Enrich (NHTSA vPIC + spec catalog)
-        │                         │  EnrichedListing
-        ▼                         ▼
-   Feature engine (Polars)   effective cost · msrp discount · segment edge
+   Normalize ─► Dedup ─► Enrich (NHTSA vPIC batch + cache · spec catalog)
+        │  canonical make/model               │  EnrichedListing
+        ▼                                      ▼
+   Feature engine        effective cost · age-realistic finance · PEER-GROUP value
         │
         ▼
-   DuckDB  ── current snapshot  +  append-only history (for self-labeling)
+   DuckDB  ── current snapshot (source-scoped)  +  append-only history (self-labeling)
         │
         ▼
-   Ranking pipeline   S1 hard filter ─► S2 Pareto frontier ─► S3 score ─► S4 personalize
-        │                                                   (LambdaMART or rules)
+   Ranking pipeline   S1 filter ─► S2 Pareto frontier ─► S3 LambdaMART score ─► S4 personalize
+        │
         ▼
-   FastAPI  /top_deals /recommend /stats /vehicle  ──►  Dashboard
+   FastAPI  /top_deals /recommend /stats /listing /vehicle  ──►  Dashboard
 ```
 
-Single-process by design: DuckDB is an embedded store, so the crawl scheduler
-runs inside the API process rather than a second container fighting for the file
-lock. (One writer only — never run `uvicorn --workers >1`.)
+Single-process by design: DuckDB is an embedded store, so the crawl scheduler runs
+**inside** the API process rather than a second container fighting for the file
+lock. One writer only — never run `uvicorn --workers >1`.
 
 ---
 
-## Scale, concurrency & honest data volume
+## The value signal (what "a good deal" means)
 
-The crawl is fully **async**: all adapters fetch concurrently (`asyncio.gather`),
-each bounded by its own `asyncio.Semaphore` (`ALR_*_CONCURRENCY`) with tenacity
-retry/backoff on 429/5xx; one dead source can't kill the run. VIN enrichment is
-**batched** (vPIC `DecodeVINValuesBatch`, ≤50/call) and **cached** in DuckDB
-(`vin_cache`), so repeat crawls spend no vPIC traffic on known VINs. Marketcheck
-runs a concurrent **sweep** over `(zip × make × price-band)` slices with a global
-row budget enforced at append time, deduped by VIN downstream.
+Absolute cheapness is a trap: a depreciated 2006 beater is "90% off MSRP", and the
+most expensive lease is never the best one. So value is **peer-relative** —
+cheaper than comparable cars is good, more expensive is penalized:
 
-Concurrency makes the crawl fast, but it can't manufacture inventory. Honest
-free-source ceiling (no paid tier, no proxies), **measured**: a single fast
-Marketcheck-Free sweep yields **~3–4k distinct** — the Free tier **rate-limits
-the burst (429)** so most of a 500-call sweep fails after retries (raise
-`ALR_MC_DELAY` / lower `ALR_MC_CONCURRENCY` to throttle a slower sweep across the
-month toward the ~25k theoretical 500-call cap). The lease-transfer forums add
-only a few hundred. So realistic free volume is **~3–4k per burst, ~1–3k
-repeatable**; 10k+ doesn't exist on free sources. After a Free burn the quota is
-spent, so **source-scoped snapshots** keep the swept inventory served while
-leasehackr keeps refreshing. Reaching 10k–100k *repeatably* needs **Marketcheck
-Standard** (the sweep code already supports it — just widen
-`ALR_MC_ZIPS/MAKES/PRICE_BANDS`) and/or a Playwright + proxy cluster.
+- **Used cars** compare `effective $/mo` vs **make + body + 3-year-band** peers,
+  minus an **age + high-mileage** penalty, on an **age-realistic finance term**
+  (`72mo` when new → `24mo` floor). The board surfaces recent, reasonable-mileage
+  cars priced low for their kind, not old depreciation.
+- **Lease transfers** compare vs **same make + model + body** peers' median, with a
+  body-level fallback when peers are sparse, plus a small drag on missing-power
+  (0hp) listings. Cheaper-for-its-kind floats up; a +64%-vs-market Bentley does not.
+- **Canonical make/model** at normalize time (`BMW` not `Bmw`, junk models dropped)
+  so the *same brand from different sources lands in the same peer group*.
+
+`segment_avg_effective` (the peer baseline) and `value_edge` (% vs that baseline)
+are computed by `pipeline/features.recompute_used_market`, shared by the crawl, the
+API serve path, and retraining so labels grade on exactly what the API shows.
 
 ---
 
 ## The ranking, honestly
 
-This is framed as Learning-to-Rank, but LTR needs relevance labels and you have
-none on day one. So the system is built to earn them:
+LTR needs relevance labels you don't have on day one, so the system earns them:
 
-1. **Rules first.** An interpretable score (market edge + Pareto bonus +
-   freshness − instability) ranks deals from the first crawl. Defensible, no
-   training needed.
-2. **Self-collected labels.** Every crawl appends to a `history` table. A listing
-   that disappears fast was a good deal; one that lingers, drops price, or gets
-   reposted was not. That diff is graded relevance — real outcome supervision.
-3. **Model.** `LightGBM LambdaRank` (LambdaMART) trains on those labels, with each
-   market snapshot as a query group, optimizing NDCG. It generalizes past the
-   hand-tuned rule weights.
+1. **Bootstrap labels** grade every listing 0–4 by `value_edge` within its segment
+   — the model is trained and serving from the first crawl.
+2. **Outcome labels** (`labels_from_history`): once crawl history accrues, a
+   listing that disappears fast was a good deal; one that lingers / price-cuts was
+   not — graded from its snapshot *before* the outcome (no leakage). `feature_log`
+   keeps sold listings trainable after they vanish.
+3. **LightGBM LambdaRank** (LambdaMART) trains on those labels (each snapshot a
+   query group, optimizing NDCG); **SHAP** `pred_contrib` gives every ranked deal a
+   "why it ranks here". No LLM anywhere.
 
-Out of the box the trainer **bootstraps** labels from the rule ranker (each body
-segment is a query group, listings graded 0–4 by within-segment deal score) so
-the model is trained and serving on first boot. **Once ≥2 crawls of history
-accumulate, `train_ltr.py` automatically switches to `labels_from_history`** —
-each crawl is a query group and a listing's grade comes from what the market
-actually did (disappeared fast = sold = high grade; lingering / price-cut =
-low), predicted from its snapshot *before* the outcome (temporal supervision, no
-leakage). Retained feature snapshots (`feature_log`, pruned to the last
-`ALR_FEATURE_LOG_KEEP` crawls) make sold listings trainable after they vanish.
+Three guards keep the auto-retrain from going wrong (all in `rank/retrain.py`):
 
-The dashboard always shows the interpretable 0–99 score; when a model is loaded
-it drives the *ordering* (normalized to the same scale so personalization stays
-comparable).
+- **Coverage gate** — use outcome labels only when history covers ≥40% of the
+  snapshot, else the value_edge bootstrap (a frozen sweep resolves too few rows).
+- **Degeneracy guard** — reject outcome labels when one grade dominates (>70%); a
+  source-scoped re-crawl makes replaced rows look "sold", which inverts ranking.
+- **Value-sanity check** — after training, if the model is *anti-correlated* with
+  `value_edge` on leases (volatile scrape sources make luxury leases look "sold
+  fast"), fall back to the bootstrap. This fires automatically and self-corrects.
+
+The dashboard shows a 1–99 score (percentile of the model's ordering, so it spreads
+even when the model clusters on near-identical inventory).
 
 ---
-
-## Quickstart (local)
-
-```bash
-pip install -e .          # or: make install
-python scripts/seed_db.py # seed the pipeline offline (no network)  → make seed
-python scripts/train_ltr.py                                          # → make train
-uvicorn alr.api.main:app --port 8000                                 # → make api
-# open http://localhost:8000
-```
 
 ## Quickstart (docker)
 
@@ -131,14 +120,12 @@ docker compose up --build   # seeds + trains on first boot, serves on :8000
 ```
 
 The in-process scheduler runs an initial crawl on boot, then **every
-`ALR_CRAWL_INTERVAL_MIN` (default 3h)**, and **retrains daily** — all in one
-process so DuckDB stays single-writer. **Auto-crawl runs FREE sources only**
-(`leasehackr,swapalease,leasetrader,cars`). **Marketcheck is deliberately NOT in
-the auto-crawl list** — its 500-calls/mo Free quota would burn out in hours and
-trip 429s, so it's a **manual, monthly-budgeted sweep** (below); its swept
-inventory is preserved untouched by the source-scoped snapshot whenever the free
-sources refresh. Set `ALR_ADAPTERS=seed` for pure offline. Scrapers respect each
-site's terms — this is a personal-use system.
+`ALR_CRAWL_INTERVAL_MIN` (default 3h)**, and **retrains daily**. **Auto-crawl runs
+FREE sources only** (`leasehackr,swapalease,leasetrader,cars`). **Marketcheck is
+deliberately NOT auto-crawled** — its 500-calls/mo Free quota would burn out in
+hours and trip 429s, so it's a **manual, monthly-budgeted sweep** (below); its
+swept inventory is preserved untouched by the source-scoped snapshot whenever the
+free sources refresh. Set `ALR_ADAPTERS=seed` for pure offline.
 
 **Manual Marketcheck sweep** (only when you have monthly quota — Free is 500/mo):
 
@@ -153,6 +140,56 @@ docker compose run --rm \
 docker compose up -d                    # restart; auto-crawl preserves the sweep
 ```
 Free tier caps `radius` at **100mi**; the sweep hard-stops at `ALR_MC_MAX_CALLS`.
+Put your key in a gitignored `.env` (see `.env.example`); it never enters the repo.
+
+## Quickstart (local, offline)
+
+```bash
+pip install -e .            # or: make install
+python scripts/seed_db.py   # seed offline (no network)            → make seed
+python scripts/train_ltr.py # train on the snapshot                → make train
+uvicorn alr.api.main:app --port 8000                               → make api
+```
+
+---
+
+## Data sources & honest volume
+
+A live snapshot is roughly **~4k listings**: Marketcheck (used, a manual DMV/PA
+sweep, ~3.4k, source-scoped so it persists between free crawls), Cars.com (used,
+multi-metro, ~70), and the lease-transfer forums — leasehackr (~60), swapalease
+(~520), leasetrader (~90–400, rate-limit sensitive). Concurrency makes the crawl
+fast but can't manufacture inventory; free sources realistically yield single-digit
+thousands. Reaching 10k–100k *repeatably* needs **Marketcheck Standard** (the sweep
+code already supports it — widen `ALR_MC_ZIPS/MAKES/PRICE_BANDS`) and/or proxies.
+
+| adapter | what it pulls |
+|---|---|
+| `marketcheck` | used-car inventory API; concurrent `zip × price-band` sweep, hard call cap + cumulative print, inverse-amortized sale price |
+| `cars` | Cars.com used inventory via the page's embedded `srp_results` JSON (vin/price/mileage/body/CPO); multi-metro via `ALR_CARS_ZIPS` |
+| `leasehackr` | Discourse `.json` private-transfers board; parses the deal-sheet body (msrp/monthly/fees/miles), occasionally a VIN |
+| `swapalease` | per-make search pages, **+ incremental detail-page enrichment** (VIN / incentive / trim / odometer), capped per crawl |
+| `leasetrader` | Angular `/search-results`, scroll-loaded; polite delay + exponential backoff (it rate-limits bursts) |
+| `seed` | deterministic offline generator for dev/CI |
+
+**Browser adapters run each scrape in an isolated subprocess** (`_pw_runner`),
+serialized with a hard timeout — this container can't run multiple Playwright
+lifecycles in one process, so a slow/blocked site emits 0 instead of hanging the
+crawl. Extracted VINs feed the shared batched vPIC enrichment (hp/body/ev), cached
+in DuckDB so repeat crawls spend no vPIC traffic on known VINs.
+
+---
+
+## Dashboard
+
+No build step (React UMD + Babel from a CDN, single `web/index.html`). Tabs split
+**Leases / Used cars / All** (`listing_type`). Used cars lead with sale price + an
+age-realistic "est. finance" note; leases show real effective $/mo. Controls:
+free-text **search** (`q`), **dynamic state chips** (from `/stats.by_state`, with a
+**DMV** shortcut), **sort** (best / price / newest / state-proximity),
+year/mileage/price range filters (used), make multi-select, **CPO**/AWD. Every
+ranked deal links to a detail sub-page with its **SHAP** driver bars and a
+**Pareto frontier** (cost vs power) scatter.
 
 ---
 
@@ -160,62 +197,27 @@ Free tier caps `radius` at **100mi**; the sweep hard-stops at `ALR_MC_MAX_CALLS`
 
 | Method | Path | Notes |
 |---|---|---|
-| GET  | `/stats` | market pulse: active count, median/min effective $/mo, body mix, active ranker |
-| GET  | `/top_deals` | full 4-stage rank; query params `budget, bodies, listing_type, cpo_only, want_awd, want_lux, min_mpm, max_months, states, pref_states, sort, near, q, makes, year_min, year_max, odo_max, price_min, price_max, awd_only, top_k`. `bodies` empty = all types; `listing_type`=`all\|lease\|used`; **`q`** = free-text AND search over make/model/body/flags (e.g. `mach-e`, `denali`, `subaru awd`); **`states`/`makes`** = hard filters; year/mileage/price ranges are used-car filters; **`sort`**=`score\|price_asc\|price_desc\|newest\|distance` (`distance` needs `near=<state>` — state-level proximity, the data has no dealer lat/lng). |
+| GET  | `/stats` | active count, median/min effective $/mo, `by_body` / `by_make` / `by_state` / `by_type` / `used_cpo`, `year_range` |
+| GET  | `/top_deals` | full 4-stage rank. Params: `budget, bodies, listing_type, cpo_only, want_awd, want_lux, min_mpm, max_months, states, pref_states, sort, near, q, makes, year_min, year_max, odo_max, price_min, price_max, awd_only, top_k`. `listing_type`=`all\|lease\|used`; **`q`** = free-text AND search; **`states`/`makes`** = hard filters; **`sort`**=`score\|price_asc\|price_desc\|newest\|distance` (`distance` needs `near=<state>`, state-level — the data has no dealer lat/lng) |
 | POST | `/recommend` | same, JSON body (`PrefBody`) |
-| GET  | `/vehicle/{vin}` | one decoded + scored listing |
+| GET  | `/listing/{key}` · `/vehicle/{vin}` | one decoded + scored listing (scored within the full snapshot) |
 | POST | `/reload` | re-read snapshot + model from disk |
 | GET  | `/health` | liveness + counts |
 
 ```bash
-curl "localhost:8000/top_deals?budget=700&bodies=EV,SUV&want_awd=true&top_k=5"
+curl "localhost:8000/top_deals?listing_type=used&q=mach-e&states=VA,MD&sort=price_asc&top_k=5"
 ```
 
 ---
 
 ## Adding a source (the plugin point)
 
-The pipeline never changes — you write one **async** adapter that returns
-`RawListing`s. Network calls go through `self.aget_json`, which bounds
-concurrency with the adapter's semaphore and retries 429/5xx with backoff:
-
-```python
-from alr.adapters.base import BaseAdapter, adapter
-from alr.schema import RawListing
-
-@adapter("mysource")
-class MySourceAdapter(BaseAdapter):
-    concurrency = 5            # in-flight request cap for this source
-
-    async def fetch(self) -> list[RawListing]:
-        data = await self.aget_json("https://.../search.json")
-        return [RawListing(source="mysource", source_id=row["id"],
-                           make=row["make"], monthly=row["price"])
-                for row in data["results"]]
-```
-
-Playwright/browser adapters keep their synchronous code and bridge with
-`asyncio.to_thread(self._fetch_blocking)` (the sync Playwright API can't run
-inside the event loop). Add `mysource` to `ALR_ADAPTERS` and it's in the next
-crawl. The same contract is why this generalizes past cars — a `zillow` or
-`ebay` adapter reuses the entire normalize → rank → serve stack.
-
-Included adapters: `leasehackr` (Discourse `.json`, real; private-transfers board
-by default — regional "marketplace" boards are broker ads with ~0 real transfers,
-opt in via `ALR_LH_AUTODISCOVER=1`; polite rate-limited with a deal-sheet quality
-gate), `marketcheck` (used-car inventory API, real; concurrent zip/make/price
-sweep), `cars` (Cars.com used-car inventory, real — parses the page's embedded
-`srp_results` JSON for vin/price/mileage/body/CPO, paginated; multi-metro via
-`ALR_CARS_ZIPS`), `swapalease` /
-`leasetrader` (Playwright + stealth; reachable but their placeholder selectors
-are stale → emit 0 today), `seed` (offline generator for dev/CI). Concurrent
-headless-browser launches are serialized by a lock; Chromium runs via
-`channel="chromium"` (the default headless shell segfaults in some containers).
-
-The dashboard splits **Leases / Used cars / All** (tabs → `listing_type`): used
-cars (marketcheck + cars) lead with sale price + an "est. finance pmt @7.5%/72mo"
-label; leases keep the real effective-$/mo logic. Used cars carry a **CPO** badge
-+ a "CPO only" filter; `/stats` reports `by_type` and `used_cpo`.
+Write one **async** adapter returning `RawListing`s; the pipeline never changes.
+JSON sources go through `self.aget_json` (per-adapter semaphore + tenacity backoff
+on 429/5xx). Browser sources implement a sync `_fetch_blocking()` and return
+`await fetch_via_subprocess(self.name)` — `_pw_runner` runs it in its own process.
+Add the name to `ALR_ADAPTERS` and it's in the next crawl. The same contract is why
+this generalizes past cars — a `zillow` or `ebay` adapter reuses the whole stack.
 
 ---
 
@@ -225,37 +227,31 @@ label; leases keep the real effective-$/mo logic. Used cars carry a **CPO** badg
 alr/
   schema.py            Raw → Normalized → Enriched → Scored (Pydantic contract)
   config.py            env-driven config
-  seed.py              deterministic offline data (mirrors the dashboard)
-  adapters/            async base + registry; leasehackr, marketcheck, swapalease, leasetrader, cars, seed
-  enrich/nhtsa.py      batched vPIC VIN decode (+ DuckDB vin_cache) + spec catalog fallback
+  adapters/            async base + registry; marketcheck, cars, leasehackr,
+                       swapalease+leasetrader, seed; _pw_runner (subprocess browser)
+  enrich/nhtsa.py      batched vPIC VIN decode (+ DuckDB vin_cache) + spec catalog
   pipeline/
-    normalize.py  dedup.py  features.py (effective-cost engine)  run.py (async orchestrator)
+    normalize.py       canonical make/model + dedup-key; dedup.py
+    features.py        effective-cost + age-realistic finance + peer-group value
+    run.py             async crawl orchestrator
   rank/
     rules.py           Pareto frontier + interpretable score
     pipeline.py        4-stage rank (filter → pareto → score → personalize)
-    ltr.py             LambdaMART train + scorer
-    labels.py          graded-relevance labels: bootstrap (cold start) + labels_from_history (outcomes)
-  store/db.py          DuckDB: current snapshot + history + vin_cache + feature_log
-  api/main.py          FastAPI + static dashboard mount
-  scheduler.py         standalone scheduler (separate-store setups)
+    ltr.py             LambdaMART train + scorer + SHAP contributions
+    labels.py          bootstrap (value_edge) + labels_from_history (outcomes)
+    retrain.py         coverage gate + degeneracy guard + value-sanity check
+  store/db.py          DuckDB: current (source-scoped) + history + vin_cache + feature_log
+  api/main.py          FastAPI + scheduler + static dashboard mount
 scripts/               seed_db.py, train_ltr.py
+tests/                 swapalease detail-parser unit test (+ fixture)
 web/index.html         connected dashboard (React + Recharts, no build step)
 ```
 
 ---
 
-## Evaluation
-
-LTR is trained with NDCG@5/@10 as the eval metric. Offline ranking quality
-(NDCG, MAP, MRR, Precision@k) is computed per snapshot; once history accrues,
-online metrics (did top-ranked deals actually sell faster?) close the loop and
-become the next round of labels.
-
 ## Notes
 
-- Scraper selectors live in one block per adapter — site redesigns are a quick
-  fix, not a rewrite.
-- Effective-cost weights and personalization bonuses are explicit and tunable in
-  `rank/pipeline.py` and `rank/rules.py`.
-- This is a personal research tool; respect the terms and `robots.txt` of any
-  site you point it at.
+- Scoring stays LambdaMART + SHAP — no LLM. Value weights and penalties are
+  explicit and tunable in `pipeline/features.py` and `rank/`.
+- Scraper selectors live in one block per adapter — a site redesign is a quick fix.
+- This is a personal research tool; respect each site's terms and `robots.txt`.
