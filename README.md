@@ -130,10 +130,29 @@ uvicorn alr.api.main:app --port 8000                                 # → make 
 docker compose up --build   # seeds + trains on first boot, serves on :8000
 ```
 
-It crawls **live by default** (`leasehackr,marketcheck`; put your Marketcheck key
-in a gitignored `.env`) — an initial crawl runs on boot, then every
-`ALR_CRAWL_INTERVAL_MIN`, retraining daily. Set `ALR_ADAPTERS=seed` for pure
-offline. Scrapers respect each site's terms — this is a personal-use system.
+The in-process scheduler runs an initial crawl on boot, then **every
+`ALR_CRAWL_INTERVAL_MIN` (default 3h)**, and **retrains daily** — all in one
+process so DuckDB stays single-writer. **Auto-crawl runs FREE sources only**
+(`leasehackr,swapalease,leasetrader,cars`). **Marketcheck is deliberately NOT in
+the auto-crawl list** — its 500-calls/mo Free quota would burn out in hours and
+trip 429s, so it's a **manual, monthly-budgeted sweep** (below); its swept
+inventory is preserved untouched by the source-scoped snapshot whenever the free
+sources refresh. Set `ALR_ADAPTERS=seed` for pure offline. Scrapers respect each
+site's terms — this is a personal-use system.
+
+**Manual Marketcheck sweep** (only when you have monthly quota — Free is 500/mo):
+
+```bash
+docker compose stop                     # free the DB lock (single-writer)
+docker compose run --rm \
+  -e ALR_ADAPTERS=marketcheck -e ALR_MC_ZIPS="20001,21201,22030,..." \
+  -e ALR_MC_PRICE_BANDS="0-15000,15000-30000,30000-60000,60000-200000" \
+  -e ALR_MC_RADIUS=100 -e ALR_MC_MAX_CALLS=170 -e ALR_MC_MAX_ROWS=10000 \
+  -e ALR_MC_USED_THIS_MONTH=<calls already spent> \
+  autoleaserank python -m alr.pipeline.run     # prints calls_used / cumulative~N/500
+docker compose up -d                    # restart; auto-crawl preserves the sweep
+```
+Free tier caps `radius` at **100mi**; the sweep hard-stops at `ALR_MC_MAX_CALLS`.
 
 ---
 

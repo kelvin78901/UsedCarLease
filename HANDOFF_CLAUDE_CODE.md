@@ -11,6 +11,24 @@ crawled concurrently.
 
 ---
 
+## Operations — it runs itself (no manual upkeep)
+
+The in-process scheduler (`ALR_INPROCESS_SCHEDULER=1`, single process so DuckDB
+stays single-writer) handles everything. **You don't need to touch it.**
+
+| What | When | Details |
+|---|---|---|
+| **Auto-crawl** | on boot, then **every 3h** (`ALR_CRAWL_INTERVAL_MIN=180`) | **FREE sources only**: `leasehackr, swapalease, leasetrader, cars`. Typical emit — leasehackr ~63 (full Private-Transfers board), swapalease ~525 (25-make sweep), leasetrader ~400 when un-throttled (recovering from a self-inflicted rate-limit), cars ~66 (DMV zips). One crawl ≈ **350–550s** (Playwright adapters run **serialized, each in its own subprocess with a 200s hard timeout** — a slow/blocked site emits 0, never stalls the crawl). |
+| **Marketcheck** | **MANUAL only** | **NEVER in the auto-crawl list** (500 calls/mo Free would burn out in hours + trip 429s). ~**25/500 calls left this month**; next sweep only **after the monthly quota resets**. Its **3397 swept rows are preserved untouched** by the source-scoped snapshot every time the four free sources refresh. Run a sweep by hand with `ALR_ADAPTERS=marketcheck ... python -m alr.pipeline.run` (see the DMV-sweep section below). |
+| **Auto-retrain** | **daily** (every 24h, first run boot+3min) | `_retrain_job` → `rank.retrain.retrain()` → `/reload`. Label choice is automatic: **coverage gate** uses real outcome labels (sold-fast = relevant) only if history covers ≥40% of the snapshot, else the **value_edge bootstrap**; a **degeneracy guard** (one grade >70% → bootstrap) stops a source-swap from inverting the ranking. LambdaMART + SHAP, **no LLM**. |
+
+**If you do nothing:** the free-source data **refreshes every 3 hours**, the model
+**retrains every day**, and Marketcheck's 3397 used cars **stay exactly as they are**
+until you choose to run a manual sweep next month. Scores stay a real 1–99 spread,
+ranked by value. Nothing to babysit.
+
+---
+
 ## Latest iteration — DMV expansion (line A) + search/filter/UI (line B)
 
 **Line A (used-car volume, DMV + PA focus).**
