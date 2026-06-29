@@ -1,27 +1,32 @@
 """Swapalease + LeaseTrader adapters (Playwright).
 
-Reality check (verified via inspection): both sites JS-render their search
-results and WAF-block plain httpx (403). So these use Playwright, not httpx.
+Selectors reverse-engineered from the LIVE sites (2025). Both render results
+client-side, but neither WAF-blocks a normal headless Chromium, so they are
+treated as real sources (not placeholders). If a site later puts up an
+interactive anti-bot challenge, the helpers detect it and emit 0 honestly.
 
-IMPORTANT - UNVERIFIED: unlike the Leasehackr adapter, these have NOT been run
-against the live sites from here (sandbox can't reach them). The selectors below
-are best-effort placeholders. On your machine:
-
-    pip install playwright && playwright install chromium
-    python scripts/probe.py swapalease
-
-then open the saved page, inspect the real card/field selectors, and fix the SEL
-dict. These sites also gate seller contact behind registration and may present a
-Cloudflare/Incapsula challenge that needs a real (non-headless / stealth) browser.
-Treat Leasehackr as the primary source; these are bonus coverage.
+Swapalease: per-make search pages /lease/{Make}/search.aspx list cards as
+    div.listing-item > a[href="/lease/details/..salid=N"]
+      span.listing-title     -> "2025 BMW i4"
+      span.listing-location   -> "Los Angeles,CA"
+    and the card text carries "$394/mo for 34 months".
+LeaseTrader: /search-results is an Angular app; each card is div.for_grid with
+    labeled lines: Lease Payment / Months Remaining / Down Payment / Location.
 """
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 
 from .base import BaseAdapter, adapter, BROWSER_LOCK
 from ..schema import RawListing
+
+_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+_CHALLENGE = re.compile(r"just a moment|checking your browser|cf-challenge|"
+                        r"cloudflare|attention required|turnstile|captcha|"
+                        r"verify you are human|access denied", re.I)
 
 
 def _money(s):
@@ -31,119 +36,171 @@ def _money(s):
     return float(m.group(1).replace(",", "")) if m else None
 
 
-_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-_CHALLENGE = re.compile(r"just a moment|checking your browser|cf-challenge|"
-                        r"cloudflare|attention required|turnstile|captcha|"
-                        r"verify you are human|access denied", re.I)
+def _launch(p):
+    return p.chromium.launch(headless=True, channel="chromium", args=[
+        "--no-sandbox", "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled"])
 
 
-def _playwright_cards(url, sel, tag="swapalease"):
-    """(card_text_dict, href) per result card. Tries playwright-stealth to clear a
-    Cloudflare JS challenge. If an interactive challenge (Turnstile/hCaptcha) or a
-    block is detected, reports the real reason and returns [] — never fabricates."""
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print(f"[{tag}] playwright not installed "
-              "(pip install playwright && playwright install chromium)")
-        return []
-    out = []
-    try:
-        with BROWSER_LOCK, sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel="chromium", args=[
-                "--no-sandbox", "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled"])
-            ctx = browser.new_context(user_agent=_UA, locale="en-US",
-                                      viewport={"width": 1366, "height": 900})
-            page = ctx.new_page()
-            try:                              # strip automation fingerprints
-                from playwright_stealth import stealth_sync
-                stealth_sync(page)
-            except Exception:
-                pass
-            page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(4000)       # give the JS challenge time to clear
-            try:
-                page.wait_for_selector(sel["card"], timeout=20000)
-            except Exception:
-                head = (page.title() or "") + " " + (page.inner_text("body")[:200] if page.query_selector("body") else "")
-                if _CHALLENGE.search(head):
-                    print(f"[{tag}] BLOCKED by anti-bot (interactive challenge): "
-                          f"{head.strip()[:90]!r} -> emit 0. Needs proxy/stealth API (gated).")
-                else:
-                    print(f"[{tag}] no listing cards (selectors stale or 0 results): "
-                          f"title={page.title()!r} -> emit 0")
-                browser.close()
-                return []
-            for c in page.query_selector_all(sel["card"]):
-                def txt(key):
-                    el = c.query_selector(sel.get(key, "")) if sel.get(key) else None
-                    return el.inner_text().strip() if el else None
-                link = c.query_selector(sel.get("link", "a"))
-                href = link.get_attribute("href") if link else None
-                out.append(({k: txt(k) for k in ("title", "monthly", "months", "miles")}, href))
-            browser.close()
-    except Exception as e:
-        print(f"[{tag}] playwright crawl failed (blocked/anti-bot?): {type(e).__name__} {str(e)[:100]}")
-    return out
+def _blocked(page, tag) -> bool:
+    """True (and prints the real reason) only when an anti-bot wall is detected."""
+    body = page.inner_text("body")[:200] if page.query_selector("body") else ""
+    head = (page.title() or "") + " " + body
+    if _CHALLENGE.search(head):
+        print(f"[{tag}] BLOCKED by anti-bot (interactive challenge): "
+              f"{head.strip()[:90]!r} -> emit 0. Needs proxy/stealth API (gated).")
+        return True
+    return False
 
 
 @adapter("swapalease")
 class SwapaleaseAdapter(BaseAdapter):
-    LIST_URL = "https://www.swapalease.com/lease/search.aspx"
-    SEL = {"card": "div.listing-item, .vehicle-card, .searchResultItem",
-           "title": ".vehicle-title, h2, .title", "monthly": ".monthly-payment, .payment, .price",
-           "months": ".months-remaining, .term", "miles": ".miles-allowed, .mileage", "link": "a"}
+    BASE = "https://www.swapalease.com"
+    # one search page per make (each lists ~20+ takeovers); the generic page only
+    # shows ~10 featured. Override/extend with ALR_SWAP_MAKES.
+    MAKES = [m.strip() for m in os.getenv(
+        "ALR_SWAP_MAKES",
+        "Toyota,Honda,BMW,Mercedes-Benz,Ford,Chevrolet,Audi,Lexus,Jeep,Subaru,"
+        "Nissan,Hyundai,Kia,Volkswagen,Porsche,Tesla,Cadillac,GMC,Ram,Volvo,"
+        "Acura,Infiniti,Mazda,Genesis,Land-Rover").split(",") if m.strip()]
 
     async def fetch(self) -> list[RawListing]:
         return await asyncio.to_thread(self._fetch_blocking)
 
     def _fetch_blocking(self) -> list[RawListing]:
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            print("[swapalease] playwright not installed; skipping")
+            return []
         out: list[RawListing] = []
-        for fields, href in _playwright_cards(self.LIST_URL, self.SEL):
-            title = fields.get("title") or ""
-            if not title:
-                continue
-            toks = re.sub(r"^\s*\d{4}\s*", "", title).split()
-            sid = re.search(r"(\d{5,})", href or title)
-            out.append(RawListing(
-                source="swapalease",
-                source_id=sid.group(1) if sid else title[:40],
-                url=href, title=title,
-                make=toks[0] if toks else None,
-                model=" ".join(toks[1:3]) if len(toks) > 1 else None,
-                monthly=_money(fields.get("monthly")),
-                months_remaining=int(_money(fields.get("months")) or 0) or None,
-                miles_per_year=int(_money(fields.get("miles")) or 0) or None,
-            ))
+        seen: set[str] = set()
+        try:
+            with BROWSER_LOCK, sync_playwright() as p:
+                br = _launch(p)
+                ctx = br.new_context(user_agent=_UA, locale="en-US",
+                                     viewport={"width": 1366, "height": 900})
+                page = ctx.new_page()
+                for mk in self.MAKES:
+                    url = f"{self.BASE}/lease/{mk}/search.aspx"
+                    try:
+                        page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                        page.wait_for_timeout(2200)
+                    except Exception as e:
+                        print(f"[swapalease] {mk} nav failed: {type(e).__name__}")
+                        continue
+                    if not page.query_selector("div.listing-item"):
+                        if _blocked(page, "swapalease"):
+                            break
+                        continue
+                    for c in page.query_selector_all("div.listing-item"):
+                        r = self._card(c)
+                        if r and r.source_id not in seen:
+                            seen.add(r.source_id)
+                            out.append(r)
+                br.close()
+        except Exception as e:
+            print(f"[swapalease] crawl failed: {type(e).__name__} {str(e)[:100]}")
+        print(f"[swapalease] {len(out)} lease takeovers across {len(self.MAKES)} makes")
         return out
+
+    def _card(self, c):
+        t = c.query_selector("span.listing-title")
+        title = t.inner_text().strip() if t else None
+        if not title:
+            return None
+        a = c.query_selector("a")
+        href = a.get_attribute("href") if a else None
+        loc = c.query_selector("span.listing-location")
+        loc = loc.inner_text().strip() if loc else ""
+        sm = re.search(r",\s*([A-Z]{2})\b", loc)
+        pm = re.search(r"\$([\d,]+)\s*/\s*mo(?:\s*for\s*(\d+)\s*month)?",
+                       c.inner_text(), re.I)
+        sid = re.search(r"salid=(\d+)", href or "")
+        toks = re.sub(r"^\s*\d{4}\s*", "", title).split()
+        return RawListing(
+            source="swapalease",
+            source_id=sid.group(1) if sid else re.sub(r"\W+", "", title)[:40],
+            url=(self.BASE + href) if (href and href.startswith("/")) else href,
+            title=title,
+            make=toks[0] if toks else None,
+            model=" ".join(toks[1:3]) if len(toks) > 1 else None,
+            monthly=_money(pm.group(1)) if pm else None,
+            months_remaining=int(pm.group(2)) if (pm and pm.group(2)) else None,
+            state=sm.group(1) if sm else None,
+        )
 
 
 @adapter("leasetrader")
 class LeaseTraderAdapter(BaseAdapter):
-    LIST_URL = "https://www.leasetrader.com/lease-deals"
-    SEL = {"card": ".deal-card, .listing, .vehicle", "title": "h3, .title, h2",
-           "monthly": ".price, .monthly, .payment", "months": ".term, .months",
-           "miles": ".mileage, .miles", "link": "a"}
+    LIST_URL = "https://www.leasetrader.com/search-results"
 
     async def fetch(self) -> list[RawListing]:
         return await asyncio.to_thread(self._fetch_blocking)
 
     def _fetch_blocking(self) -> list[RawListing]:
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            print("[leasetrader] playwright not installed; skipping")
+            return []
         out: list[RawListing] = []
-        for fields, href in _playwright_cards(self.LIST_URL, self.SEL, tag="leasetrader"):
-            title = fields.get("title") or ""
-            if not title:
-                continue
-            toks = re.sub(r"^\s*\d{4}\s*", "", title).split()
-            out.append(RawListing(
-                source="leasetrader",
-                source_id=re.sub(r"\W+", "", title)[:40],
-                url=href, title=title,
-                make=toks[0] if toks else None,
-                model=" ".join(toks[1:3]) if len(toks) > 1 else None,
-                monthly=_money(fields.get("monthly")),
-                months_remaining=int(_money(fields.get("months")) or 0) or None,
-            ))
+        seen: set[str] = set()
+        try:
+            with BROWSER_LOCK, sync_playwright() as p:
+                br = _launch(p)
+                ctx = br.new_context(user_agent=_UA, locale="en-US",
+                                     viewport={"width": 1366, "height": 900})
+                page = ctx.new_page()
+                page.goto(self.LIST_URL, wait_until="domcontentloaded", timeout=45000)
+                try:
+                    page.wait_for_selector("div.for_grid", timeout=20000)
+                except Exception:
+                    if not _blocked(page, "leasetrader"):
+                        print(f"[leasetrader] no cards: title={page.title()!r} -> emit 0")
+                    br.close()
+                    return []
+                # the Angular list lazy-loads on scroll; pull a few batches
+                for _ in range(8):
+                    page.mouse.wheel(0, 25000)
+                    page.wait_for_timeout(1200)
+                for c in page.query_selector_all("div.for_grid"):
+                    r = self._card(c)
+                    if r and r.source_id not in seen:
+                        seen.add(r.source_id)
+                        out.append(r)
+                br.close()
+        except Exception as e:
+            print(f"[leasetrader] crawl failed: {type(e).__name__} {str(e)[:100]}")
+        print(f"[leasetrader] {len(out)} lease takeovers")
         return out
+
+    def _card(self, c):
+        txt = c.inner_text()
+        if "$" not in txt:
+            return None
+        title = re.sub(r"\s*Lease\s*$", "", txt.strip().split("\n")[0], flags=re.I).strip()
+        if not title:
+            return None
+
+        def after(label):
+            m = re.search(rf"{label}\s*:?\s*\n?\s*\$?\s*([\d,\.]+)", txt, re.I)
+            return m.group(1) if m else None
+        months = after("Months Remaining")
+        lm = re.search(r"Location\s*:?\s*\n?\s*([^\n]+)", txt, re.I)
+        sm = re.search(r",\s*([A-Z]{2})\b", lm.group(1)) if lm else None
+        a = c.query_selector("a")
+        href = a.get_attribute("href") if a else None
+        toks = re.sub(r"^\s*\d{4}\s*", "", title).split()
+        return RawListing(
+            source="leasetrader",
+            source_id=re.sub(r"\W+", "", title)[:50],
+            url=("https://www.leasetrader.com" + href) if (href and href.startswith("/")) else href,
+            title=title,
+            make=toks[0] if toks else None,
+            model=" ".join(toks[1:3]) if len(toks) > 1 else None,
+            monthly=_money(after("Lease Payment")),
+            months_remaining=int(float(months)) if months else None,
+            drive_off=_money(after("Down Payment")),
+            state=sm.group(1) if sm else None,
+        )
