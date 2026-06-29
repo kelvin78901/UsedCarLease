@@ -23,6 +23,31 @@ def is_used(l) -> bool:
     return l.source in USED_SOURCES
 
 
+# State -> region, for sort=distance. The data has no dealer lat/lng (Marketcheck
+# returns city/state only; cars.com only a zip), so proximity is state-level.
+_STATE_REGION = {}
+for _region, _states in {
+    "NE": "CT ME MA NH RI VT NY NJ PA",
+    "SE": "DE MD DC VA WV NC SC GA FL KY TN AL MS AR LA",
+    "MW": "OH MI IN IL WI MN IA MO ND SD NE KS",
+    "SW": "TX OK NM AZ",
+    "W": "CO WY MT ID UT NV CA OR WA AK HI",
+}.items():
+    for _s in _states.split():
+        _STATE_REGION[_s] = _region
+
+
+def _distance_rank(l, near: str) -> int:
+    """0 = same state, 1 = same region, 2 = elsewhere. near='' -> 0 (no sort)."""
+    if not near:
+        return 0
+    st = (l.state or "").upper()
+    near = near.upper()
+    if st == near:
+        return 0
+    return 1 if (_STATE_REGION.get(st) and _STATE_REGION.get(st) == _STATE_REGION.get(near)) else 2
+
+
 @dataclass
 class Prefs:
     budget: float = 1400
@@ -33,7 +58,10 @@ class Prefs:
     want_lux: bool = False
     min_mpm: int = 0
     max_months: int = 120   # inclusive by default: financed used cars carry a 72mo term
-    pref_states: set[str] = field(default_factory=set)
+    states: set[str] = field(default_factory=set)        # HARD filter: only these states
+    pref_states: set[str] = field(default_factory=set)   # SOFT: +8 personalization bonus
+    sort_by: str = "score"  # score | price_asc | price_desc | newest
+    near: str = ""          # reference state for sort=distance (state-level approx)
     top_k: int = 100
 
 
@@ -80,6 +108,7 @@ def rank(listings: list[EnrichedListing], prefs: Prefs,
         if (not prefs.bodies or l.body in prefs.bodies)
         and _type_ok(l, prefs.listing_type)
         and (not prefs.cpo_only or l.cpo)
+        and (not prefs.states or l.state in prefs.states)
         and l.effective_monthly <= prefs.budget
         and l.miles_per_month >= prefs.min_mpm
         and l.months_remaining <= prefs.max_months
@@ -141,7 +170,18 @@ def rank(listings: list[EnrichedListing], prefs: Prefs,
             explanation=expl,
         ))
 
-    scored.sort(key=lambda x: x.personalized_score, reverse=True)
+    # Stage 5 - sort. price_* use effective_monthly (the unified cost axis;
+    # monotonic with sale price for used cars, the right axis for leases).
+    if prefs.sort_by == "price_asc":
+        scored.sort(key=lambda x: x.effective_monthly)
+    elif prefs.sort_by == "price_desc":
+        scored.sort(key=lambda x: x.effective_monthly, reverse=True)
+    elif prefs.sort_by == "newest":
+        scored.sort(key=lambda x: x.days_on_market)
+    elif prefs.sort_by == "distance":
+        scored.sort(key=lambda x: (_distance_rank(x, prefs.near), -x.personalized_score))
+    else:
+        scored.sort(key=lambda x: x.personalized_score, reverse=True)
     for i, s in enumerate(scored, 1):
         s.rank = i
 

@@ -139,7 +139,10 @@ class PrefBody(BaseModel):
     want_lux: bool = False
     min_mpm: int = 0
     max_months: int = 120
-    pref_states: list[str] = []
+    states: list[str] = []          # hard filter: only these states
+    pref_states: list[str] = []     # soft +8 bonus
+    sort: str = "score"             # score | price_asc | price_desc | newest | distance
+    near: str = ""                  # reference state for sort=distance
     top_k: int = 100
 
 
@@ -159,7 +162,10 @@ def top_deals(
     want_lux: bool = Query(False),
     min_mpm: int = Query(0),
     max_months: int = Query(120),
-    pref_states: str = Query(""),
+    states: str = Query(""),           # hard filter: only these states
+    pref_states: str = Query(""),      # soft +8 bonus
+    sort: str = Query("score"),        # score|price_asc|price_desc|newest|distance
+    near: str = Query(""),             # reference state for sort=distance
     top_k: int = Query(100),
 ):
     p = Prefs(
@@ -168,7 +174,9 @@ def top_deals(
         listing_type=listing_type, cpo_only=cpo_only,
         want_awd=want_awd, want_lux=want_lux, min_mpm=min_mpm,
         max_months=max_months,
+        states=set(s for s in states.split(",") if s),
         pref_states=set(s for s in pref_states.split(",") if s),
+        sort_by=sort, near=near,
         top_k=top_k,
     )
     return _do_rank(p)
@@ -180,7 +188,8 @@ def recommend(body: PrefBody):
         budget=body.budget, bodies=set(body.bodies),
         listing_type=body.listing_type, cpo_only=body.cpo_only,
         want_awd=body.want_awd, want_lux=body.want_lux, min_mpm=body.min_mpm,
-        max_months=body.max_months, pref_states=set(body.pref_states),
+        max_months=body.max_months, states=set(body.states),
+        pref_states=set(body.pref_states), sort_by=body.sort, near=body.near,
         top_k=body.top_k,
     )
     return _do_rank(p)
