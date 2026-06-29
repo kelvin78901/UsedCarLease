@@ -28,13 +28,21 @@ def retrain(con=None):
     # resolves only a handful of churning rows -> the LambdaMART model overfits
     # them and can even INVERT the value ordering on the unseen bulk. The
     # value_edge bootstrap (every listing) ranks homogeneous used cars stably.
+    # Also reject DEGENERATE outcome labels (one grade dominates). A source-scoped
+    # re-crawl makes the replaced VINs look like they "sold" -> ~all grade 4 ->
+    # a meaningless, often rank-inverting signal. Healthy graded relevance is
+    # spread across grades.
     covered = len(hist[1]) if hist is not None else 0
-    if hist is not None and covered >= 0.4 * len(listings):
+    degenerate = False
+    if hist is not None and covered:
+        from collections import Counter
+        degenerate = max(Counter(hist[1]).values()) / covered > 0.7
+    if hist is not None and covered >= 0.4 * len(listings) and not degenerate:
         X, y, group, _ = hist
         source = "OUTCOME labels from history (sold-fast = relevant)"
     else:
         X, y, group, _ = bootstrap(listings)
-        source = (f"value_edge bootstrap labels (history covered only "
-                  f"{covered}/{len(listings)})")
+        why = "degenerate label dist" if degenerate else f"history covered only {covered}/{len(listings)}"
+        source = f"value_edge bootstrap labels ({why})"
     train(X, y, group)
     return source, y, group
