@@ -1,4 +1,6 @@
 # AutoLeaseRank
+<img width="1427" height="882" alt="image" src="https://github.com/user-attachments/assets/8a62c537-8acf-4312-93e9-2d1cb362ad93" />
+<img width="1428" height="882" alt="image" src="https://github.com/user-attachments/assets/36998cc2-a66b-449a-b329-1044181dc095" />
 
 A market-intelligence platform that aggregates **used-car listings and lease
 transfers** from several sources, puts every deal on one honest cost axis, and
