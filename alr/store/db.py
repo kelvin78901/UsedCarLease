@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import duckdb
 
-from ..config import DB_PATH
+from ..config import DB_PATH, FEATURE_LOG_KEEP
 from ..schema import EnrichedListing
 
 
@@ -35,6 +35,9 @@ def connect() -> duckdb.DuckDBPyConnection:
             body VARCHAR, hp INTEGER, ev BOOLEAN, awd BOOLEAN,
             decoded_at TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS feature_log (
+            crawl_ts TIMESTAMP, listing_key VARCHAR, data JSON
+        );
     """)
     return con
 
@@ -48,6 +51,17 @@ def save_snapshot(con: duckdb.DuckDBPyConnection, listings: list[EnrichedListing
     hist_rows = [(ts, l.listing_key, l.effective_monthly, l.days_on_market,
                   l.price_drops, l.favorites) for l in listings]
     con.executemany("INSERT INTO history VALUES (?, ?, ?, ?, ?, ?)", hist_rows)
+
+    # Retain the full feature vector per crawl so listings that later disappear
+    # (sold) are still trainable -> outcome labels (rank.labels.labels_from_history).
+    # `cur_rows` already holds the serialized JSON; reuse it. Prune to the most
+    # recent FEATURE_LOG_KEEP crawls to bound growth.
+    con.executemany("INSERT INTO feature_log VALUES (?, ?, ?)",
+                    [(ts, r[0], r[3]) for r in cur_rows])
+    con.execute(
+        "DELETE FROM feature_log WHERE crawl_ts NOT IN "
+        "(SELECT DISTINCT crawl_ts FROM feature_log ORDER BY crawl_ts DESC LIMIT ?)",
+        [FEATURE_LOG_KEEP])
 
 
 def vin_cache_get(con: duckdb.DuckDBPyConnection | None, vins) -> dict[str, dict]:
@@ -81,6 +95,14 @@ def vin_cache_put(con: duckdb.DuckDBPyConnection | None, decoded: dict[str, dict
 def load_current(con: duckdb.DuckDBPyConnection) -> list[EnrichedListing]:
     rows = con.execute("SELECT data FROM current").fetchall()
     return [EnrichedListing(**json.loads(r[0])) for r in rows]
+
+
+def load_feature_log(con: duckdb.DuckDBPyConnection) -> list[tuple]:
+    """Retained per-crawl feature snapshots as (crawl_ts, listing_key, data_json),
+    oldest crawl first. Substrate for outcome-based LTR labels."""
+    return con.execute(
+        "SELECT crawl_ts, listing_key, data FROM feature_log ORDER BY crawl_ts"
+    ).fetchall()
 
 
 def get_by_vin(con: duckdb.DuckDBPyConnection, vin: str) -> EnrichedListing | None:

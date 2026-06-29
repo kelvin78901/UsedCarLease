@@ -11,6 +11,52 @@ crawled concurrently.
 
 ---
 
+## 0. STATUS — updated 2026-06-29 (P0 + P1 + P2-bonus shipped)
+
+The concurrency/scale work in §6 is **done** (git: baseline → P0 → P1 → P2-bonus,
+one commit per phase). What changed since this doc was first written:
+
+- **P0 (done).** `hp=0` fixed: batch vPIC `DecodeVINValuesBatch` + a DuckDB
+  `vin_cache` + precedence **adapter → vPIC → catalog** (the old catalog
+  make-level fallback was clobbering real data and mislabeling gas cars as EV).
+  Leasehackr is multi-board with **live category autodiscovery** (no hardcoded
+  ids). Marketcheck passes build hp/year through; `normalize` carries
+  `_hp/_ev/_year`. Sold-deal/title cleanup confirmed.
+- **P1 (done).** Fully async: `BaseAdapter` → `httpx.AsyncClient` (client +
+  semaphore built in `aopen()`, never `__init__`); `run.py` → `asyncio.gather`
+  with per-source semaphores + tenacity retry; Playwright adapters bridged via
+  `asyncio.to_thread`; Marketcheck concurrent `(zip×make×band)` sweep with a
+  global row budget sliced at append. Measured: Leasehackr fetch 9.1s→2.4s
+  (conc 1→5). New deps: `tenacity`.
+- **P2-bonus (done).** `rank/labels.py:labels_from_history` — real outcome
+  labels (sold-fast = relevant) from a retained `feature_log`; `train_ltr.py`
+  auto-uses it once ≥2 crawls exist, else bootstrap. **Schedule `deploy/retrain.sh`
+  (or `python scripts/train_ltr.py`) periodically** so the model switches to
+  outcome labels as history accrues.
+- **P2 PAID — NOT done, owner-gated.** Marketcheck Standard ($749/mo) + richer
+  sweep, and Playwright + residential-proxy scraping. Owner decided free sources
+  (~1–3k repeatable) suffice for now; revisit Standard on demand. **Do not start
+  without explicit sign-off.**
+
+**Honest volume ceiling (free, no proxies):** one-time ~15–20k (≈95% a single
+Marketcheck-Free quota burn), repeatable ~1–3k. 10k–100k repeatable is gated by
+data access, not code — see §5.
+
+**Doc corrections from live testing:** the vPIC batch payload is
+`VIN,year;VIN,year` (comma between VIN/year, semicolon between records), **not**
+the `vin;year|...` written in §4.1 — the wrong format silently returns garbage.
+The Leasehackr regional boards resolved live are `c/marketplace/{california/14,
+northeast/15,midwest/16,south/17,west/18}` + `c/private-transfers/12`.
+
+Env knobs added: `ALR_LH_CONCURRENCY/RETRIES`, `ALR_MC_CONCURRENCY/RETRIES`,
+`ALR_VPIC_CONCURRENCY/BATCH_SIZE`, `ALR_LH_AUTODISCOVER`, `ALR_LH_MAX_PAGES`,
+`ALR_MC_ZIPS/MAKES/PRICE_BANDS/PER_QUERY_CAP`, `ALR_FEATURE_LOG_KEEP`,
+`ALR_LTR_MIN_HISTORY` — all documented in `.env.example`. The Marketcheck key is
+kept in a gitignored `.env` (never committed). The rest of this doc is the
+original handoff; §4 issues 1–4 are now fixed.
+
+---
+
 ## 1. What this project is
 
 A learning-to-rank market-intelligence platform for car lease/used-car deals.

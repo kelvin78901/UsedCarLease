@@ -36,3 +36,9 @@ USER_AGENT = os.getenv(
 
 # ranking default to LTR if a trained model exists, else heuristic rules
 USE_LTR = os.getenv("ALR_USE_LTR", "auto")  # auto | rules | ltr
+
+# --- outcome-label training (history) ---------------------------------------
+# how many recent crawls of feature snapshots to retain for outcome labelling,
+# and the min resolved rows before train_ltr uses history instead of bootstrap.
+FEATURE_LOG_KEEP = int(os.getenv("ALR_FEATURE_LOG_KEEP", "60"))
+LTR_MIN_HISTORY_ROWS = int(os.getenv("ALR_LTR_MIN_HISTORY", "20"))

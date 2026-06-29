@@ -54,7 +54,27 @@ number is the backbone of every downstream feature.
 
 Single-process by design: DuckDB is an embedded store, so the crawl scheduler
 runs inside the API process rather than a second container fighting for the file
-lock.
+lock. (One writer only — never run `uvicorn --workers >1`.)
+
+---
+
+## Scale, concurrency & honest data volume
+
+The crawl is fully **async**: all adapters fetch concurrently (`asyncio.gather`),
+each bounded by its own `asyncio.Semaphore` (`ALR_*_CONCURRENCY`) with tenacity
+retry/backoff on 429/5xx; one dead source can't kill the run. VIN enrichment is
+**batched** (vPIC `DecodeVINValuesBatch`, ≤50/call) and **cached** in DuckDB
+(`vin_cache`), so repeat crawls spend no vPIC traffic on known VINs. Marketcheck
+runs a concurrent **sweep** over `(zip × make × price-band)` slices with a global
+row budget enforced at append time, deduped by VIN downstream.
+
+Concurrency makes the crawl fast, but it can't manufacture inventory. Honest
+free-source ceiling (no paid tier, no proxies): **one-time ~15–20k** listings —
+~95% of it a single Marketcheck-Free monthly-quota burn (500 calls/mo × 50
+rows); **repeatable ~1–3k**. The lease-transfer forums total only a few hundred
+to ~1.5k; that inventory doesn't exist at 10k+ scale. Reaching 10k–100k
+*repeatably* needs **Marketcheck Standard** (the sweep code already supports it —
+just widen `ALR_MC_ZIPS/MAKES/PRICE_BANDS`) and/or a Playwright + proxy cluster.
 
 ---
 
@@ -75,8 +95,13 @@ none on day one. So the system is built to earn them:
 
 Out of the box the trainer **bootstraps** labels from the rule ranker (each body
 segment is a query group, listings graded 0–4 by within-segment deal score) so
-the model is trained and serving on first boot. Swap in `labels_from_history`
-once crawls accumulate.
+the model is trained and serving on first boot. **Once ≥2 crawls of history
+accumulate, `train_ltr.py` automatically switches to `labels_from_history`** —
+each crawl is a query group and a listing's grade comes from what the market
+actually did (disappeared fast = sold = high grade; lingering / price-cut =
+low), predicted from its snapshot *before* the outcome (temporal supervision, no
+leakage). Retained feature snapshots (`feature_log`, pruned to the last
+`ALR_FEATURE_LOG_KEEP` crawls) make sold listings trainable after they vanish.
 
 The dashboard always shows the interpretable 0–99 score; when a model is loaded
 it drives the *ordering* (normalized to the same scale so personalization stays
@@ -126,7 +151,9 @@ curl "localhost:8000/top_deals?budget=700&bodies=EV,SUV&want_awd=true&top_k=5"
 
 ## Adding a source (the plugin point)
 
-The pipeline never changes — you write one adapter that yields `RawListing`:
+The pipeline never changes — you write one **async** adapter that returns
+`RawListing`s. Network calls go through `self.aget_json`, which bounds
+concurrency with the adapter's semaphore and retries 429/5xx with backoff:
 
 ```python
 from alr.adapters.base import BaseAdapter, adapter
@@ -134,20 +161,26 @@ from alr.schema import RawListing
 
 @adapter("mysource")
 class MySourceAdapter(BaseAdapter):
-    def fetch(self):
-        r = self.client.get("https://...")
-        for row in parse(r.text):
-            yield RawListing(source="mysource", source_id=row.id,
-                             make=row.make, monthly=row.price, ...)
+    concurrency = 5            # in-flight request cap for this source
+
+    async def fetch(self) -> list[RawListing]:
+        data = await self.aget_json("https://.../search.json")
+        return [RawListing(source="mysource", source_id=row["id"],
+                           make=row["make"], monthly=row["price"])
+                for row in data["results"]]
 ```
 
-Add `mysource` to `ALR_ADAPTERS` and it's in the next crawl. The same contract
-is why this generalizes past cars — a `zillow` or `ebay` adapter reuses the
-entire normalize → rank → serve stack.
+Playwright/browser adapters keep their synchronous code and bridge with
+`asyncio.to_thread(self._fetch_blocking)` (the sync Playwright API can't run
+inside the event loop). Add `mysource` to `ALR_ADAPTERS` and it's in the next
+crawl. The same contract is why this generalizes past cars — a `zillow` or
+`ebay` adapter reuses the entire normalize → rank → serve stack.
 
-Included adapters: `leasehackr` (Discourse `.json` API, real), `swapalease` /
-`leasetrader` (httpx + selectolax, real), `cars` (Playwright, optional), `seed`
-(deterministic offline generator for dev/CI).
+Included adapters: `leasehackr` (Discourse `.json`, real; multi-board with live
+category autodiscovery), `marketcheck` (used-car inventory API, real; concurrent
+zip/make/price sweep), `swapalease` / `leasetrader` (Playwright, unverified
+placeholders), `cars` (Playwright, optional), `seed` (deterministic offline
+generator for dev/CI).
 
 ---
 
@@ -158,16 +191,16 @@ alr/
   schema.py            Raw → Normalized → Enriched → Scored (Pydantic contract)
   config.py            env-driven config
   seed.py              deterministic offline data (mirrors the dashboard)
-  adapters/            base + registry, leasehackr, swapalease, leasetrader, cars, seed
-  enrich/nhtsa.py      vPIC VIN decode + spec catalog fallback
+  adapters/            async base + registry; leasehackr, marketcheck, swapalease, leasetrader, cars, seed
+  enrich/nhtsa.py      batched vPIC VIN decode (+ DuckDB vin_cache) + spec catalog fallback
   pipeline/
-    normalize.py  dedup.py  features.py (effective-cost engine)  run.py (orchestrator)
+    normalize.py  dedup.py  features.py (effective-cost engine)  run.py (async orchestrator)
   rank/
     rules.py           Pareto frontier + interpretable score
     pipeline.py        4-stage rank (filter → pareto → score → personalize)
     ltr.py             LambdaMART train + scorer
-    labels.py          graded-relevance label builder (bootstrap + history)
-  store/db.py          DuckDB: current snapshot + history
+    labels.py          graded-relevance labels: bootstrap (cold start) + labels_from_history (outcomes)
+  store/db.py          DuckDB: current snapshot + history + vin_cache + feature_log
   api/main.py          FastAPI + static dashboard mount
   scheduler.py         standalone scheduler (separate-store setups)
 scripts/               seed_db.py, train_ltr.py
