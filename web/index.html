@@ -38,6 +38,12 @@
 const { useState, useEffect } = React;
 const API = location.origin.includes("file") ? "http://localhost:8000" : "";
 const fmt$ = n => "$" + Math.round(n).toLocaleString();
+const NOW_YEAR = new Date().getFullYear();
+// realistic used-car finance term (mirrors backend used_finance_term): shrinks
+// with age so an old car isn't shown a fake 72mo monthly.
+const usedTerm = y => { if(!y) return 72; const age=Math.max(0,NOW_YEAR-y);
+  return Math.max(24, Math.min(72, 72 - Math.max(0, age-3)*6)); };
+const finNote = d => `@7.5%/${usedTerm(d.year)}mo`;
 const isUsed = d => !!d && (d.source === "marketcheck" || d.source === "cars");
 const SRC = {leasehackr:"#F4B645",marketcheck:"#5BD9CB",swapalease:"#9C8BF5",
              leasetrader:"#9C8BF5",seed:"#AEB9CA"};
@@ -108,7 +114,7 @@ function CostBreakdown({d}){
       <div className="fm" style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--line)",
         marginTop:6,paddingTop:6,fontSize:15,fontWeight:600}}>
         <span>Est. finance $/mo</span><span style={{color:"var(--amber)"}}>{fmt$(d.effective_monthly)}</span></div>
-      <div style={{color:"var(--dim)",fontSize:10,marginTop:4}}>* est. finance pmt @7.5% APR / 72mo</div>
+      <div style={{color:"var(--dim)",fontSize:10,marginTop:4}}>* est. finance pmt @7.5% APR / {usedTerm(d.year)}mo</div>
     </div>;
   }
   const rows=[["Base monthly",d.monthly,false],
@@ -151,7 +157,7 @@ function VehiclePage({routeKey}){
           <div className="fm" style={{color:"var(--mid)",fontSize:13,marginTop:4}}>
             <span style={{color:SRC[d.source]||"var(--mid)"}}>{d.source}</span> · {d.dealer_city?d.dealer_city+", ":""}{d.state} ·
             {" "}{d.hp}hp · {isUsed(d)
-              ? <>{d.price>0?fmt$(d.price)+" sale":""} · est. {fmt$(d.effective_monthly)}/mo @7.5%/72mo · {d.odometer>0?d.odometer.toLocaleString()+" mi":"mileage n/a"}</>
+              ? <>{d.price>0?fmt$(d.price)+" sale":""} · est. {fmt$(d.effective_monthly)}/mo {finNote(d)} · {d.odometer>0?d.odometer.toLocaleString()+" mi":"mileage n/a"}</>
               : <>{fmt$(d.msrp)} MSRP · {d.msrp_discount_pct}% off</>} · #{d.rank}</div>
           <div style={{marginTop:8}}><ExternalLink url={d.url}/></div>
         </div>
@@ -175,7 +181,7 @@ function VehiclePage({routeKey}){
       <Card title="Listing detail" style={{marginTop:16}}>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px 18px"}} className="fm">
           {(isUsed(d)
-            ? [["Sale price",d.price>0?fmt$(d.price):"—"],["Est. finance $/mo",fmt$(d.effective_monthly)+" @7.5%/72mo"],
+            ? [["Sale price",d.price>0?fmt$(d.price):"—"],["Est. finance $/mo",fmt$(d.effective_monthly)+" "+finNote(d)],
                ["Odometer",d.odometer>0?d.odometer.toLocaleString()+" mi":"—"],["Dealer",d.dealer_city?d.dealer_city+", "+d.state:d.state],
                ["Days on market",d.days_on_market],["Certified (CPO)",d.cpo?"yes":"no"],
                ["MSRP",d.msrp>0?fmt$(d.msrp):"—"],["Body",d.body],["AWD",d.awd?"yes":"no"]]
@@ -447,7 +453,7 @@ function Dashboard(){
                   : <div style={{textAlign:"right"}}>
                       <div className="fm" style={{fontSize:18,fontWeight:600}}>{fmt$(d.effective_monthly)}</div>
                       <div className="fm" style={{fontSize:10.5,color:"var(--dim)"}}>est. $/mo</div>
-                      <div className="fm" style={{fontSize:10,color:"var(--dim)",marginTop:2}}>finance @7.5%/72mo</div></div>)
+                      <div className="fm" style={{fontSize:10,color:"var(--dim)",marginTop:2}}>finance {finNote(d)}</div></div>)
                 : <div style={{textAlign:"right"}}>
                     <div className="fm" style={{fontSize:18,fontWeight:600}}>{fmt$(d.effective_monthly)}</div>
                     <div className="fm" style={{fontSize:10.5,color:"var(--dim)"}}>eff/mo</div>

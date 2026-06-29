@@ -52,6 +52,10 @@ def _load():
             else:                                   # junk MSRP -> hide it
                 l.msrp = 0.0
                 l.msrp_discount_pct = 0.0
+    # Re-derive used-car value with age-realistic finance + peer/age/mileage signal
+    # (the stored value_edge/effective predate the fix; recompute in-memory).
+    from ..pipeline.features import recompute_used_market
+    recompute_used_market(S.listings)
     S.scorer = LTRScorer.load()
 
 

@@ -18,6 +18,11 @@ def retrain(con=None):
         listings = _db.load_current(con)
         if len(listings) < 10:
             raise ValueError("snapshot too small; seed or crawl first")
+        # match the serving path: age-realistic finance + peer value for used cars
+        # (the stored value_edge predates the fix), so labels grade on the same
+        # signal the API serves.
+        from ..pipeline.features import recompute_used_market
+        recompute_used_market(listings)
         hist = labels_from_history(con)
     finally:
         if own:
