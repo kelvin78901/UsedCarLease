@@ -29,6 +29,23 @@ ranked by value. Nothing to babysit.
 
 ---
 
+## Iteration — cross-source make/model canon + leasehackr VIN
+
+- **Canonical make/model** in `normalize()` (every adapter's pre-store choke point):
+  acronyms upper (BMW/GMC/MINI/RAM), multi-word fixed (Mercedes-Benz/Land Rover/
+  McLaren/INFINITI), else Title Case; model junk (Pending/Contact Seller) → Unknown.
+  This unifies the peer-group key across sources — leasehackr "Bmw" and swapalease
+  "BMW" now land in the same `make+model+body` group (3 BMW keys now shared, was 0).
+- **leasehackr VIN extraction** from the deal-sheet body → existing vPIC. **Honest:**
+  the body rarely carries a VIN — only **1/63** found, so hp stays 75% (catalog).
+- **Honest outcome:** these are correct data-quality fixes, but leasehackr's rank
+  barely moved (median #467 → #462, value_edge median −14% → −16%). The low rank
+  was NOT mainly a grouping artifact — leasehackr leases are genuinely priced
+  at/above their true cross-source peers; the better grouping just made that more
+  accurate. The fixes still benefit the WHOLE dataset's peer comparison.
+
+---
+
 ## Iteration — states filter + swapalease details + used-car value fix
 
 - **STATES filter** is now dynamic from `/stats.by_state` (real dealer states,
