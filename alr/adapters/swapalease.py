@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import re
 
-from .base import BaseAdapter, adapter
+from .base import BaseAdapter, adapter, BROWSER_LOCK
 from ..schema import RawListing
 
 
@@ -31,26 +31,51 @@ def _money(s):
     return float(m.group(1).replace(",", "")) if m else None
 
 
-def _playwright_cards(url, sel, user_agent="AutoLeaseRank/0.4"):
-    """Yield (card_text_dict, href) for each result card. Returns [] if Playwright
-    is missing or the site blocks us."""
+_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+_CHALLENGE = re.compile(r"just a moment|checking your browser|cf-challenge|"
+                        r"cloudflare|attention required|turnstile|captcha|"
+                        r"verify you are human|access denied", re.I)
+
+
+def _playwright_cards(url, sel, tag="swapalease"):
+    """(card_text_dict, href) per result card. Tries playwright-stealth to clear a
+    Cloudflare JS challenge. If an interactive challenge (Turnstile/hCaptcha) or a
+    block is detected, reports the real reason and returns [] — never fabricates."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("[swapalease] playwright not installed; "
-              "pip install playwright && playwright install chromium")
+        print(f"[{tag}] playwright not installed "
+              "(pip install playwright && playwright install chromium)")
         return []
     out = []
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"])  # root-in-docker
-            page = browser.new_page(user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"))
-            page.goto(url, wait_until="networkidle", timeout=45000)
-            page.wait_for_timeout(2500)  # let lazy results settle
+        with BROWSER_LOCK, sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, channel="chromium", args=[
+                "--no-sandbox", "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled"])
+            ctx = browser.new_context(user_agent=_UA, locale="en-US",
+                                      viewport={"width": 1366, "height": 900})
+            page = ctx.new_page()
+            try:                              # strip automation fingerprints
+                from playwright_stealth import stealth_sync
+                stealth_sync(page)
+            except Exception:
+                pass
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(4000)       # give the JS challenge time to clear
+            try:
+                page.wait_for_selector(sel["card"], timeout=20000)
+            except Exception:
+                head = (page.title() or "") + " " + (page.inner_text("body")[:200] if page.query_selector("body") else "")
+                if _CHALLENGE.search(head):
+                    print(f"[{tag}] BLOCKED by anti-bot (interactive challenge): "
+                          f"{head.strip()[:90]!r} -> emit 0. Needs proxy/stealth API (gated).")
+                else:
+                    print(f"[{tag}] no listing cards (selectors stale or 0 results): "
+                          f"title={page.title()!r} -> emit 0")
+                browser.close()
+                return []
             for c in page.query_selector_all(sel["card"]):
                 def txt(key):
                     el = c.query_selector(sel.get(key, "")) if sel.get(key) else None
@@ -60,7 +85,7 @@ def _playwright_cards(url, sel, user_agent="AutoLeaseRank/0.4"):
                 out.append(({k: txt(k) for k in ("title", "monthly", "months", "miles")}, href))
             browser.close()
     except Exception as e:
-        print(f"[swapalease] playwright crawl failed (blocked/anti-bot?): {e}")
+        print(f"[{tag}] playwright crawl failed (blocked/anti-bot?): {type(e).__name__} {str(e)[:100]}")
     return out
 
 
@@ -107,7 +132,7 @@ class LeaseTraderAdapter(BaseAdapter):
 
     def _fetch_blocking(self) -> list[RawListing]:
         out: list[RawListing] = []
-        for fields, href in _playwright_cards(self.LIST_URL, self.SEL):
+        for fields, href in _playwright_cards(self.LIST_URL, self.SEL, tag="leasetrader"):
             title = fields.get("title") or ""
             if not title:
                 continue

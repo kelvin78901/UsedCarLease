@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import threading
 
 import httpx
 from tenacity import (AsyncRetrying, retry_if_exception, stop_after_attempt,
@@ -22,6 +23,12 @@ from ..config import HTTP_TIMEOUT
 from ..schema import RawListing
 
 REGISTRY: dict[str, type["BaseAdapter"]] = {}
+
+# Serialize headless-browser launches across Playwright adapters (cars / swapalease
+# / leasetrader). Several chromium processes launching at once in a container is
+# fragile (crashes). The adapters still run under the same asyncio.gather and in
+# to_thread worker threads; only the browser work itself queues on this lock.
+BROWSER_LOCK = threading.Lock()
 
 # Realistic browser headers - many sites WAF-block non-browser UAs with a 403 on
 # the first request. Sites behind a JS challenge still need a Playwright adapter.
