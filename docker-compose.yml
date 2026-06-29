@@ -4,10 +4,14 @@
 #
 #   docker compose up --build      -> http://localhost:8000
 #
-# Crawls LIVE by default (leasehackr + marketcheck). The scheduler runs an
-# initial crawl on boot, then every ALR_CRAWL_INTERVAL_MIN, and retrains daily.
-# Put your Marketcheck key in .env (gitignored; see .env.example). Without it,
-# marketcheck no-ops and leasehackr still runs. For pure offline, set
+# Crawls LIVE by default. The in-process scheduler runs an initial crawl on boot,
+# then every ALR_CRAWL_INTERVAL_MIN, and retrains daily.
+#
+# AUTO-CRAWL RUNS FREE SOURCES ONLY (leasehackr/swapalease/leasetrader/cars).
+# Marketcheck is NEVER in the auto-crawl list: its 500-calls/mo Free quota would
+# burn out in hours and trip 429s. It is a MANUAL, monthly-budgeted sweep, and its
+# swept inventory is preserved by the source-scoped snapshot (see README
+# "Marketcheck"). Put your key in .env only for that manual sweep. Offline: set
 # ALR_ADAPTERS=seed.
 
 services:
@@ -20,16 +24,14 @@ services:
         required: false
     environment:
       ALR_INPROCESS_SCHEDULER: "1"
-      ALR_CRAWL_INTERVAL_MIN: "180"            # quota-safe cadence
-      # Marketcheck Free quota is spent (one-time burn) -> omitted; source-scoped
-      # snapshots keep its ~3.3k swept inventory served while these refresh.
-      # cars = working free used-car source. swapalease/leasetrader are wired +
-      # concurrent but currently emit 0 (reachable, placeholder selectors stale).
-      # Restore marketcheck once the monthly quota resets (or on a paid tier).
-      ALR_ADAPTERS: "leasehackr,cars,swapalease,leasetrader"
+      ALR_CRAWL_INTERVAL_MIN: "180"            # every 3h — gentle on the Playwright sites
+      # AUTO-CRAWL = FREE SOURCES ONLY. Marketcheck is deliberately ABSENT: it's a
+      # MANUAL, monthly-quota sweep; auto-crawling it would burn ~500/mo in hours and
+      # trip 429s. Its swept ~3.4k rows are preserved by the source-scoped snapshot
+      # when these four refresh. NEVER add marketcheck here.
+      ALR_ADAPTERS: "leasehackr,swapalease,leasetrader,cars"
       ALR_CARS_ZIPS: "20001,21201,19103,23220"  # DMV + PA corridor (DC/Baltimore/Philly/Richmond)
       ALR_CARS_PAGES: "3"
-      ALR_MC_MAX_ROWS: "50"                    # quota-safe per crawl (Free = 500 calls/mo)
       ALR_USE_LTR: "auto"
     volumes:
       - alr-data:/app/data
