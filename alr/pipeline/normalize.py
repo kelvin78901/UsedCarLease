@@ -22,8 +22,8 @@ def _guess_body(raw: RawListing) -> str:
 
 
 def normalize(raw: RawListing) -> NormalizedListing | None:
-    if not raw.make or not raw.monthly:
-        return None  # un-rankable
+    if not raw.make or not raw.monthly or raw.monthly < 30:
+        return None  # un-rankable (monthly < $30 = a parse artifact, e.g. "$1/mo")
 
     months = raw.months_remaining or 24
     mpy = raw.miles_per_year or 12000
