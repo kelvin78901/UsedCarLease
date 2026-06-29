@@ -23,11 +23,18 @@ def retrain(con=None):
         if own:
             con.close()
 
-    if hist is not None:
+    # Use outcome labels only if they cover a meaningful fraction of the snapshot.
+    # When most listings are a frozen sweep (preserved, not re-crawled), history
+    # resolves only a handful of churning rows -> the LambdaMART model overfits
+    # them and can even INVERT the value ordering on the unseen bulk. The
+    # value_edge bootstrap (every listing) ranks homogeneous used cars stably.
+    covered = len(hist[1]) if hist is not None else 0
+    if hist is not None and covered >= 0.4 * len(listings):
         X, y, group, _ = hist
         source = "OUTCOME labels from history (sold-fast = relevant)"
     else:
         X, y, group, _ = bootstrap(listings)
-        source = "cold-start bootstrap labels (insufficient history)"
+        source = (f"value_edge bootstrap labels (history covered only "
+                  f"{covered}/{len(listings)})")
     train(X, y, group)
     return source, y, group
