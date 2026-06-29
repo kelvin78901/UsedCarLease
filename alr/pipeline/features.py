@@ -41,37 +41,66 @@ def used_finance_term(year: int) -> int:
     return max(24, min(72, 72 - max(0, age - 3) * 6))
 
 
-def _seg_key(l) -> str:
-    """Used cars compare WITHIN make+body+3yr-band peers (so 'cheap' means cheap vs
-    similar cars, not cheap because it's 20 years old). Leases compare by body."""
-    if getattr(l, "price", 0) and l.price > 0:
+MIN_PEERS = 4   # need this many same-kind peers to trust the fine comparison
+
+
+def _is_used(l) -> bool:
+    return bool(getattr(l, "price", 0) and l.price > 0)
+
+
+def _fine_key(l) -> str:
+    """Closest peers: used = make+body+3yr-band; lease = make+model+body, so 'cheap'
+    means cheap for THIS car, not cheap because it's old (used) or a cheap class
+    (lease). The u|/l| prefix keeps used and lease pools separate."""
+    if _is_used(l):
         yb = (l.year // 3) * 3 if getattr(l, "year", 0) else 0
-        return f"{l.make}|{l.body}|{yb}"
-    return l.body
+        return f"u|{l.make}|{l.body}|{yb}"
+    mb = (l.model or "").split()[0] if l.model else ""
+    return f"l|{l.make}|{mb}|{l.body}"
+
+
+def _broad_key(l) -> str:
+    """Fallback pool when the fine peer group is too small (leases are sparse):
+    body level, still separated by used vs lease."""
+    return f"{'u' if _is_used(l) else 'l'}|{l.body}"
 
 
 def recompute_used_market(listings) -> None:
-    """In-place. Used cars: (1) age-realistic est. finance monthly, (2) value vs
-    make/body/year-band peers minus an age + high-mileage penalty -- so the top
-    deals become recent, reasonable-mileage cars that are cheap for their kind,
-    not depreciated 2006 beaters. Leases keep their real effective_monthly +
-    body-segment value. Shared by build_features (crawl) and api._load (serve)."""
+    """In-place value signal, shared by build_features (crawl) + api._load + retrain.
+
+    Used cars: age-realistic est. finance monthly + value vs make/body/year-band
+    peers, minus an age + high-mileage penalty (recent, reasonable-mileage, cheap-
+    for-kind floats up; depreciated beaters don't).
+
+    Leases: value = effective $/mo vs same make/model/body peers' MEDIAN -- cheaper
+    than its kind is good, MORE EXPENSIVE (vs-mkt positive) is penalized, never
+    rewarded. Sparse peer groups fall back to the body-level median instead of a
+    degenerate single-listing baseline that produced fake top scores; 0hp leases
+    (VIN not yet enriched) take a small drag so missing features can't top the board.
+    """
     from ..adapters.marketcheck import amortized_monthly
     for l in listings:
-        if getattr(l, "price", 0) and l.price > 0 and getattr(l, "year", 0):
+        if _is_used(l) and getattr(l, "year", 0):
             l.effective_monthly = amortized_monthly(l.price, term=used_finance_term(l.year))
-    groups: dict[str, list] = defaultdict(list)
+    fine: dict[str, list] = defaultdict(list)
+    broad: dict[str, list] = defaultdict(list)
     for l in listings:
-        groups[_seg_key(l)].append(l.effective_monthly)
-    avg = {k: statistics.mean(v) for k, v in groups.items() if v}
+        fine[_fine_key(l)].append(l.effective_monthly)
+        broad[_broad_key(l)].append(l.effective_monthly)
+    fine_med = {k: statistics.median(v) for k, v in fine.items()}
+    broad_med = {k: statistics.median(v) for k, v in broad.items()}
     for l in listings:
-        a = avg.get(_seg_key(l)) or 1.0
-        edge = (a - l.effective_monthly) / a
-        if getattr(l, "price", 0) and l.price > 0:          # used: age + mileage drag
+        fk = _fine_key(l)
+        base = (fine_med[fk] if len(fine[fk]) >= MIN_PEERS
+                else broad_med.get(_broad_key(l), l.effective_monthly)) or 1.0
+        edge = (base - l.effective_monthly) / base
+        if _is_used(l):                                     # age + mileage drag
             age = max(0, CURRENT_YEAR - l.year) if getattr(l, "year", 0) else 12
             odo = getattr(l, "odometer", 0) or 0
             edge -= 0.012 * age + odo / 1_000_000           # 20yr -> -.24, 150k mi -> -.15
-        l.segment_avg_effective = round(a, 1)
+        elif not getattr(l, "hp", 0):                       # lease w/ missing power
+            edge -= 0.10
+        l.segment_avg_effective = round(base, 1)
         l.value_edge = round(max(-2.0, min(1.0, edge)), 4)
 
 

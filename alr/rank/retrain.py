@@ -45,9 +45,45 @@ def retrain(con=None):
     if hist is not None and covered >= 0.4 * len(listings) and not degenerate:
         X, y, group, _ = hist
         source = "OUTCOME labels from history (sold-fast = relevant)"
+        used_outcome = True
     else:
         X, y, group, _ = bootstrap(listings)
         why = "degenerate label dist" if degenerate else f"history covered only {covered}/{len(listings)}"
         source = f"value_edge bootstrap labels ({why})"
+        used_outcome = False
     train(X, y, group)
+
+    # Post-train sanity: the model must NOT rank more-expensive-for-its-kind cars
+    # above cheaper ones. Volatile scrape sources (swapalease/leasetrader re-scraped
+    # each crawl) make luxury leases look "sold fast", inverting the lease value
+    # order even when the global label dist looks healthy. If the trained model is
+    # anti-correlated with value_edge on leases, fall back to the value_edge
+    # bootstrap (which ranks by value directly).
+    if used_outcome:
+        corr = _value_corr(listings, lease_only=True)
+        if corr < 0.05:
+            print(f"[retrain] outcome labels inverted lease value (corr={corr:+.2f}) "
+                  "-> value_edge bootstrap")
+            X, y, group, _ = bootstrap(listings)
+            train(X, y, group)
+            source = f"value_edge bootstrap labels (outcome inverted lease value, corr={corr:+.2f})"
     return source, y, group
+
+
+def _value_corr(listings, lease_only=False) -> float:
+    """Pearson correlation between the freshly-trained model's score and value_edge.
+    Positive = ranks cheaper-for-its-kind higher (good)."""
+    import statistics
+    from .ltr import LTRScorer
+    rows = ([l for l in listings if not (getattr(l, "price", 0) and l.price > 0)]
+            if lease_only else listings)
+    if len(rows) < 10:
+        return 1.0
+    sc = LTRScorer.load()
+    ss = [float(sc(l)) for l in rows]
+    vv = [l.value_edge for l in rows]
+    ms, mv = statistics.mean(ss), statistics.mean(vv)
+    cov = sum((s - ms) * (v - mv) for s, v in zip(ss, vv))
+    ds = sum((s - ms) ** 2 for s in ss) ** 0.5
+    dv = sum((v - mv) ** 2 for v in vv) ** 0.5
+    return cov / (ds * dv) if ds and dv else 0.0
