@@ -96,6 +96,22 @@ RE_CALC = re.compile(r"https?://(?:www\.)?leasehackr\.com/calculator\?([^\s)\"']
 # a deal that's already gone shouldn't be ranked
 RE_SOLD = re.compile(r"\b(sold|transfer complete|completed|no longer available|"
                      r"deal done|gone|taken|claimed)\b", re.I)
+# VIN occasionally appears in the deal sheet -> feeds the same vPIC enrichment as
+# the other sources, filling hp/body/ev. Labeled form first; bare fallback is
+# conservative (VIN charset, contains a letter, ends in a serial run of digits).
+RE_VIN_LABELED = re.compile(r"\bvin\b[:\s#]*([A-HJ-NPR-Z0-9]{17})", re.I)
+RE_VIN_BARE = re.compile(r"\b([A-HJ-NPR-Z0-9]{17})\b")
+
+
+def _extract_vin(body: str) -> str | None:
+    m = RE_VIN_LABELED.search(body)
+    if m:
+        return m.group(1).upper()
+    for m in RE_VIN_BARE.finditer(body):
+        v = m.group(1).upper()
+        if not v.isdigit() and re.search(r"[A-Z]", v) and re.search(r"\d{4}$", v):
+            return v
+    return None
 
 
 def _clean_title(t: str) -> str:
@@ -285,6 +301,7 @@ class LeasehackrAdapter(BaseAdapter):
             title=title,
             make=make.replace("-", " ").title() if make else None,
             model=model,
+            vin=_extract_vin(body),                # -> vPIC fills hp/body/ev
             msrp=msrp, monthly=monthly,
             months_remaining=months,
             miles_per_year=int(vals["mpm"] * 12) if vals["mpm"] else None,
