@@ -4,20 +4,25 @@
 #
 #   docker compose up --build      -> http://localhost:8000
 #
-# Out of the box it crawls the offline `seed` adapter so it works with zero
-# network. To pull real listings, set ALR_ADAPTERS to live adapters below.
+# Crawls LIVE by default (leasehackr + marketcheck). The scheduler runs an
+# initial crawl on boot, then every ALR_CRAWL_INTERVAL_MIN, and retrains daily.
+# Put your Marketcheck key in .env (gitignored; see .env.example). Without it,
+# marketcheck no-ops and leasehackr still runs. For pure offline, set
+# ALR_ADAPTERS=seed.
 
 services:
   autoleaserank:
     build: .
     ports:
       - "8000:8000"
+    env_file:
+      - path: .env          # ALR_MARKETCHECK_KEY (gitignored; copy from .env.example)
+        required: false
     environment:
       ALR_INPROCESS_SCHEDULER: "1"
-      ALR_CRAWL_INTERVAL_MIN: "30"
-      # offline default. For live data use:
-      #   ALR_ADAPTERS: "leasehackr,swapalease,leasetrader"
-      ALR_ADAPTERS: "seed"
+      ALR_CRAWL_INTERVAL_MIN: "180"            # quota-safe cadence
+      ALR_ADAPTERS: "leasehackr,marketcheck"   # add swapalease,leasetrader,cars as desired
+      ALR_MC_MAX_ROWS: "50"                    # quota-safe per crawl (Free = 500 calls/mo)
       ALR_USE_LTR: "auto"
     volumes:
       - alr-data:/app/data

@@ -50,23 +50,41 @@ def startup():
     # process rather than a second container fighting over the file lock.
     import os
     if os.getenv("ALR_INPROCESS_SCHEDULER", "0") == "1":
+        from datetime import datetime, timedelta, timezone
         from apscheduler.schedulers.background import BackgroundScheduler
         from ..config import CRAWL_INTERVAL_MIN
         from ..pipeline.run import crawl
 
         def _job():
             try:
-                crawl()       # uses ENABLED_ADAPTERS
+                crawl()       # uses ENABLED_ADAPTERS (the real sources, not seed)
                 _load()       # refresh in-memory snapshot + model
                 print("[scheduler] snapshot refreshed")
             except Exception as e:
                 print(f"[scheduler] crawl failed: {e}")
 
+        def _retrain_job():
+            try:
+                from ..rank.retrain import retrain
+                source, y, _ = retrain()
+                _load()       # serve the new model
+                print(f"[scheduler] retrained on {source} ({len(y)} rows) + reloaded")
+            except Exception as e:
+                print(f"[scheduler] retrain failed: {e}")
+
+        now = datetime.now(timezone.utc)
         sched = BackgroundScheduler(timezone="UTC")
+        # initial real crawl ~immediately on boot, then every interval -- so the
+        # seed snapshot from first-boot is replaced by live data right away.
         sched.add_job(_job, "interval", minutes=CRAWL_INTERVAL_MIN,
-                      id="crawl", max_instances=1, coalesce=True)
+                      id="crawl", max_instances=1, coalesce=True, next_run_time=now)
+        # daily retrain; auto-switches to outcome labels once history accrues.
+        sched.add_job(_retrain_job, "interval", hours=24, id="retrain",
+                      max_instances=1, coalesce=True,
+                      next_run_time=now + timedelta(minutes=3))
         sched.start()
-        print(f"[scheduler] in-process crawl every {CRAWL_INTERVAL_MIN} min")
+        print(f"[scheduler] in-process crawl every {CRAWL_INTERVAL_MIN} min, "
+              f"retrain daily (initial crawl now)")
 
 
 @app.post("/reload")

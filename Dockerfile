@@ -14,6 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Chromium for the Playwright adapters (cars/swapalease/leasetrader). Optional
+# sources; they no-op gracefully if the browser is missing, but install it so
+# they can actually attempt the live sites (and honestly report WAF blocks).
+RUN playwright install --with-deps chromium
+
 COPY pyproject.toml ./
 COPY alr ./alr
 COPY scripts ./scripts

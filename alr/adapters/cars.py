@@ -44,7 +44,9 @@ class CarsAdapter(BaseAdapter):
         out: list[RawListing] = []
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-dev-shm-usage"])  # root-in-docker
                 page = browser.new_page(user_agent="AutoLeaseRank/0.4")
                 page.goto(self.LIST_URL, wait_until="networkidle", timeout=30000)
                 for c in page.query_selector_all("div.vehicle-card"):

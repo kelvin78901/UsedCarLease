@@ -43,7 +43,9 @@ def _playwright_cards(url, sel, user_agent="AutoLeaseRank/0.4"):
     out = []
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"])  # root-in-docker
             page = browser.new_page(user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"))
