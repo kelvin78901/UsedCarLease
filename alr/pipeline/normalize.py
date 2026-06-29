@@ -3,12 +3,45 @@ dedup key. Listings too sparse to rank (no monthly / no msrp) are dropped here
 rather than poisoning the feature store."""
 from __future__ import annotations
 
+import re
+
 from ..schema import NormalizedListing, RawListing
 
 _BODY_FROM_TITLE = [
     ("suv", "SUV"), ("crossover", "SUV"), ("sedan", "Sedan"),
     ("coupe", "Coupe"), ("truck", "Truck"), ("ev", "EV"),
 ]
+
+# Canonical make spelling so the SAME brand from different sources lands in the
+# SAME peer-group (e.g. leasehackr "Bmw" vs swapalease "BMW"). Exceptions only —
+# everything else falls back to Title Case. Keyed by lowercased input.
+_MAKE_CANON = {
+    "bmw": "BMW", "gmc": "GMC", "mini": "MINI", "ram": "RAM",
+    "mercedes-benz": "Mercedes-Benz", "mercedes benz": "Mercedes-Benz",
+    "mercedes": "Mercedes-Benz", "benz": "Mercedes-Benz", "mb": "Mercedes-Benz",
+    "land rover": "Land Rover", "land-rover": "Land Rover", "landrover": "Land Rover",
+    "range rover": "Land Rover", "alfa romeo": "Alfa Romeo", "alfa-romeo": "Alfa Romeo",
+    "rolls-royce": "Rolls-Royce", "rolls royce": "Rolls-Royce",
+    "aston martin": "Aston Martin", "aston-martin": "Aston Martin",
+    "mclaren": "McLaren", "infiniti": "INFINITI",
+}
+_MODEL_JUNK = {"", "pending", "unknown", "n/a", "na", "contact seller", "tbd"}
+
+
+def canonical_make(s: str | None) -> str | None:
+    """Uniform brand spelling across sources (acronyms upper, rest Title Case)."""
+    if not s:
+        return s
+    key = re.sub(r"\s+", " ", s.strip()).lower()
+    return _MAKE_CANON.get(key, s.strip().title())
+
+
+def canonical_model(s: str | None) -> str:
+    """Trim whitespace and drop placeholder junk (Pending / Contact Seller / ...)."""
+    if not s:
+        return "Unknown"
+    s = re.sub(r"\s+", " ", s.strip())
+    return "Unknown" if s.lower() in _MODEL_JUNK else s
 
 
 def _guess_body(raw: RawListing) -> str:
@@ -39,8 +72,8 @@ def normalize(raw: RawListing) -> NormalizedListing | None:
         source=raw.source,
         source_id=raw.source_id,
         url=raw.url,
-        make=raw.make,
-        model=raw.model or "Unknown",
+        make=canonical_make(raw.make),
+        model=canonical_model(raw.model),
         vin=raw.vin,
         body=_guess_body(raw),
         msrp=float(raw.msrp or 0.0),
