@@ -23,6 +23,8 @@ from ..schema import RawListing
 from ..seed import generate as _seed_generate
 
 CARS_ZIP = os.getenv("ALR_CARS_ZIP", "90001")
+# multi-zip sweep (e.g. east-coast metros); defaults to the single CARS_ZIP.
+CARS_ZIPS = [z.strip() for z in os.getenv("ALR_CARS_ZIPS", CARS_ZIP).split(",") if z.strip()]
 CARS_PAGES = int(os.getenv("ALR_CARS_PAGES", "5"))
 CARS_STOCK = os.getenv("ALR_CARS_STOCK", "used")       # used | cpo | new
 CARS_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -66,24 +68,25 @@ class CarsAdapter(BaseAdapter):
                 ctx = browser.new_context(user_agent=CARS_UA, locale="en-US",
                                           viewport={"width": 1366, "height": 900})
                 page = ctx.new_page()
-                for pno in range(1, CARS_PAGES + 1):
-                    got = self._scrape_page(page, pno)
-                    if got is None:           # blocked / page error
-                        break
-                    out.extend(got)
-                    if len(got) == 0:
-                        break                 # past the last page
+                for z in CARS_ZIPS:
+                    for pno in range(1, CARS_PAGES + 1):
+                        got = self._scrape_page(page, pno, z)
+                        if got is None:           # blocked / page error
+                            break
+                        out.extend(got)
+                        if len(got) == 0:
+                            break                 # past the last page for this zip
                 browser.close()
         except Exception as e:
             print(f"[cars] playwright crawl failed: {e}")
         cpo = sum(1 for r in out if r.raw.get("cpo"))
         print(f"[cars] {len(out)} used listings ({cpo} CPO) from {CARS_STOCK} "
-              f"near {CARS_ZIP}, {CARS_PAGES} page(s)")
+              f"near {','.join(CARS_ZIPS)}, {CARS_PAGES} page(s) each")
         return out
 
-    def _scrape_page(self, page, pno: int):
+    def _scrape_page(self, page, pno: int, zip_code: str = CARS_ZIP):
         url = (f"https://www.cars.com/shopping/results/?stock_type={CARS_STOCK}"
-               f"&maximum_distance=all&zip={CARS_ZIP}&page_size=20&page={pno}")
+               f"&maximum_distance=all&zip={zip_code}&page_size=20&page={pno}")
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_selector("[data-listing-id]", timeout=30000)

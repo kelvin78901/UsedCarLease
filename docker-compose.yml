@@ -27,6 +27,7 @@ services:
       # concurrent but currently emit 0 (reachable, placeholder selectors stale).
       # Restore marketcheck once the monthly quota resets (or on a paid tier).
       ALR_ADAPTERS: "leasehackr,cars,swapalease,leasetrader"
+      ALR_CARS_ZIPS: "20001,21201,19103,23220"  # DMV + PA corridor (DC/Baltimore/Philly/Richmond)
       ALR_CARS_PAGES: "3"
       ALR_MC_MAX_ROWS: "50"                    # quota-safe per crawl (Free = 500 calls/mo)
       ALR_USE_LTR: "auto"
