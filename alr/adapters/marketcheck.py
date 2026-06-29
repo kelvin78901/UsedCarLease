@@ -24,23 +24,32 @@ ALR_MC_MAX_ROWS. Without a key the adapter no-ops cleanly.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from datetime import datetime, timezone
-from typing import Iterable
 
 from .base import BaseAdapter, adapter
+from ..config import MC_CONCURRENCY, MC_RETRIES
 from ..schema import RawListing
 
 API = "https://api.marketcheck.com/v2/search/car/active"
 KEY = os.getenv("ALR_MARKETCHECK_KEY", "")
 ZIP = os.getenv("ALR_MC_ZIP", "20001")            # default DC; override per your area
 RADIUS = os.getenv("ALR_MC_RADIUS", "100")
-MAX_ROWS = int(os.getenv("ALR_MC_MAX_ROWS", "100"))   # total listings to pull
-PAGE = min(50, MAX_ROWS)                                # API max 50/req
+MAX_ROWS = int(os.getenv("ALR_MC_MAX_ROWS", "100"))   # GLOBAL row budget across the sweep
+PAGE = max(1, min(50, MAX_ROWS))                        # API max 50/req
 APR = float(os.getenv("ALR_MC_APR", "0.075"))         # finance assumptions for
 TERM = int(os.getenv("ALR_MC_TERM", "72"))            # the price->monthly estimate
 EXTRA_PARAMS = os.getenv("ALR_MC_PARAMS", "")          # e.g. "make=Toyota&price_range=10000-30000"
+
+# Query sweep: cartesian product of (zip x make x price-band). Each slice is one
+# query (capped by the API at 1500 paginated rows). Defaults to ONE slice so the
+# free tier (500 calls/mo) is safe; scale up purely by setting these env lists.
+ZIPS = [z.strip() for z in os.getenv("ALR_MC_ZIPS", ZIP).split(",") if z.strip()]
+MAKES = [m.strip() for m in os.getenv("ALR_MC_MAKES", "").split(",") if m.strip()]
+BANDS = [b.strip() for b in os.getenv("ALR_MC_PRICE_BANDS", "").split(",") if b.strip()]
+PER_QUERY_CAP = int(os.getenv("ALR_MC_PER_QUERY_CAP", "1500"))   # API hard cap / query
 
 
 def _hp_from_build(b: dict) -> int:
@@ -69,42 +78,80 @@ def amortized_monthly(price: float, apr: float = APR, term: int = TERM) -> float
 
 @adapter("marketcheck")
 class MarketcheckAdapter(BaseAdapter):
-    def fetch(self) -> Iterable[RawListing]:
+    concurrency = MC_CONCURRENCY    # keep low: free tier rate limits
+    max_retries = MC_RETRIES
+
+    @staticmethod
+    def _sweep_plan() -> list[dict]:
+        """Cartesian product of the configured slices -> base query params."""
+        plan = []
+        for z in ZIPS:
+            for mk in (MAKES or [None]):
+                for band in (BANDS or [None]):
+                    p = {"car_type": "used", "zip": z, "radius": RADIUS}
+                    if mk:
+                        p["make"] = mk
+                    if band:
+                        p["price_range"] = band
+                    plan.append(p)
+        return plan
+
+    async def _page(self, base: dict, start: int) -> tuple[list, int]:
+        """One API call: (listings, num_found). Failures degrade to ([], 0) so a
+        single bad slice/page never kills the whole sweep."""
+        params = {"api_key": KEY, "include_relevant_links": "false",
+                  "rows": PAGE, "start": start, **base}
+        for kv in EXTRA_PARAMS.split("&"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                params[k] = v
+        try:
+            data = await self.aget_json(API, params=params)
+        except Exception as e:
+            print(f"[marketcheck] page (zip={base.get('zip')} start={start}) failed: {e}")
+            return [], 0
+        return data.get("listings", []), int(data.get("num_found", 0))
+
+    async def fetch(self) -> list[RawListing]:
         if not KEY:
             print("[marketcheck] no API key. Set ALR_MARKETCHECK_KEY "
                   "(free tier at marketcheck.com/apis). Skipping.")
-            return
-        pulled = 0
-        start = 0
-        while pulled < MAX_ROWS:
-            params = {
-                "api_key": KEY, "car_type": "used", "zip": ZIP, "radius": RADIUS,
-                "rows": min(PAGE, MAX_ROWS - pulled), "start": start,
-                "include_relevant_links": "false",
-            }
-            for kv in EXTRA_PARAMS.split("&"):
-                if "=" in kv:
-                    k, v = kv.split("=", 1)
-                    params[k] = v
-            try:
-                r = self.client.get(API, params=params)
-                r.raise_for_status()
-                data = r.json()
-            except Exception as e:
-                print(f"[marketcheck] request failed: {e}")
-                return
-            listings = data.get("listings", [])
-            if not listings:
+            return []
+        plan = self._sweep_plan()
+        budget = MAX_ROWS
+        rows: list[dict] = []
+
+        # phase 1: probe start=0 of every slice concurrently to learn num_found,
+        # then schedule the remaining offset pages within the row budget.
+        probes = await asyncio.gather(*(self._page(s, 0) for s in plan))
+        pending: list[tuple[dict, int]] = []
+        for s, (listings, num_found) in zip(plan, probes):
+            if budget <= 0:
                 break
-            for L in listings:
-                rl = self._to_raw(L)
-                if rl:
-                    yield rl
-            pulled += len(listings)
-            start += len(listings)
-            if pulled >= data.get("num_found", 0):
+            take = listings[:budget]          # slice at append: never overshoot
+            rows.extend(take)
+            budget -= len(take)
+            start = len(listings)
+            cap = min(num_found, PER_QUERY_CAP)
+            # only queue pages we still have budget for (each page is up to PAGE rows)
+            while start < cap and (budget - len(pending) * PAGE) > 0:
+                pending.append((s, start))
+                start += PAGE
+
+        # phase 2: fetch the queued pages concurrently; still slice at append.
+        for listings, _ in await asyncio.gather(*(self._page(s, st) for s, st in pending)):
+            if budget <= 0:
                 break
-        print(f"[marketcheck] pulled {pulled} used listings near {ZIP}")
+            take = listings[:budget]
+            rows.extend(take)
+            budget -= len(take)
+
+        out = [r for r in (self._to_raw(L) for L in rows) if r]
+        calls = len(plan) + len(pending)
+        print(f"[marketcheck] sweep slices={len(plan)} calls~{calls} "
+              f"pulled={len(rows)} -> {len(out)} rankable "
+              f"(free tier budget = 500 calls/mo)")
+        return out
 
     @staticmethod
     def _to_raw(L: dict) -> RawListing | None:

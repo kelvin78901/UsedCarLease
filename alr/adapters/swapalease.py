@@ -17,8 +17,8 @@ Treat Leasehackr as the primary source; these are bonus coverage.
 """
 from __future__ import annotations
 
+import asyncio
 import re
-from typing import Iterable
 
 from .base import BaseAdapter, adapter
 from ..schema import RawListing
@@ -69,14 +69,18 @@ class SwapaleaseAdapter(BaseAdapter):
            "title": ".vehicle-title, h2, .title", "monthly": ".monthly-payment, .payment, .price",
            "months": ".months-remaining, .term", "miles": ".miles-allowed, .mileage", "link": "a"}
 
-    def fetch(self) -> Iterable[RawListing]:
+    async def fetch(self) -> list[RawListing]:
+        return await asyncio.to_thread(self._fetch_blocking)
+
+    def _fetch_blocking(self) -> list[RawListing]:
+        out: list[RawListing] = []
         for fields, href in _playwright_cards(self.LIST_URL, self.SEL):
             title = fields.get("title") or ""
             if not title:
                 continue
             toks = re.sub(r"^\s*\d{4}\s*", "", title).split()
             sid = re.search(r"(\d{5,})", href or title)
-            yield RawListing(
+            out.append(RawListing(
                 source="swapalease",
                 source_id=sid.group(1) if sid else title[:40],
                 url=href, title=title,
@@ -85,7 +89,8 @@ class SwapaleaseAdapter(BaseAdapter):
                 monthly=_money(fields.get("monthly")),
                 months_remaining=int(_money(fields.get("months")) or 0) or None,
                 miles_per_year=int(_money(fields.get("miles")) or 0) or None,
-            )
+            ))
+        return out
 
 
 @adapter("leasetrader")
@@ -95,13 +100,17 @@ class LeaseTraderAdapter(BaseAdapter):
            "monthly": ".price, .monthly, .payment", "months": ".term, .months",
            "miles": ".mileage, .miles", "link": "a"}
 
-    def fetch(self) -> Iterable[RawListing]:
+    async def fetch(self) -> list[RawListing]:
+        return await asyncio.to_thread(self._fetch_blocking)
+
+    def _fetch_blocking(self) -> list[RawListing]:
+        out: list[RawListing] = []
         for fields, href in _playwright_cards(self.LIST_URL, self.SEL):
             title = fields.get("title") or ""
             if not title:
                 continue
             toks = re.sub(r"^\s*\d{4}\s*", "", title).split()
-            yield RawListing(
+            out.append(RawListing(
                 source="leasetrader",
                 source_id=re.sub(r"\W+", "", title)[:40],
                 url=href, title=title,
@@ -109,4 +118,5 @@ class LeaseTraderAdapter(BaseAdapter):
                 model=" ".join(toks[1:3]) if len(toks) > 1 else None,
                 monthly=_money(fields.get("monthly")),
                 months_remaining=int(_money(fields.get("months")) or 0) or None,
-            )
+            ))
+        return out

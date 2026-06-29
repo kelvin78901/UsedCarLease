@@ -25,10 +25,7 @@ def probe_adapter(name, limit):
         return
     a = insts[0]
     print(f"running adapter: {name} ...")
-    try:
-        rows = list(a.fetch())
-    finally:
-        a.close()
+    rows = a.fetch_sync()
 
     n = len(rows)
     print(f"\n{n} raw listings returned\n")

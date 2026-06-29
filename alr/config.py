@@ -21,6 +21,14 @@ VPIC_BATCH_SIZE = int(os.getenv("ALR_VPIC_BATCH_SIZE", "50"))  # DecodeVINValues
 
 CRAWL_INTERVAL_MIN = int(os.getenv("ALR_CRAWL_INTERVAL_MIN", "30"))
 HTTP_TIMEOUT = float(os.getenv("ALR_HTTP_TIMEOUT", "20"))
+
+# --- concurrency (P1) -------------------------------------------------------
+# per-source in-flight request caps (politeness / rate limits) + retry attempts.
+LH_CONCURRENCY = int(os.getenv("ALR_LH_CONCURRENCY", "5"))
+LH_RETRIES = int(os.getenv("ALR_LH_RETRIES", "3"))
+MC_CONCURRENCY = int(os.getenv("ALR_MC_CONCURRENCY", "3"))   # keep low: free tier
+MC_RETRIES = int(os.getenv("ALR_MC_RETRIES", "3"))
+VPIC_CONCURRENCY = int(os.getenv("ALR_VPIC_CONCURRENCY", "2"))
 USER_AGENT = os.getenv(
     "ALR_USER_AGENT",
     "AutoLeaseRank/0.4 (+personal-research; respect robots.txt)",

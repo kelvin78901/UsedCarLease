@@ -21,14 +21,14 @@ Titles are used only as a last-resort fallback - they are free text and unreliab
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
-import time
 from datetime import datetime, timezone
-from typing import Iterable
 from urllib.parse import parse_qs, urlparse
 
 from .base import BaseAdapter, adapter
+from ..config import LH_CONCURRENCY, LH_RETRIES
 from ..schema import RawListing
 
 BASE = "https://forum.leasehackr.com"
@@ -38,9 +38,8 @@ DEFAULT_CATEGORY = "c/private-transfers/12"
 # whatever regional marketplace boards autodiscovery finds on the live site.
 _ENV_CATS = [c.strip() for c in os.getenv("ALR_LH_CATEGORY", "").split(",") if c.strip()]
 AUTODISCOVER = os.getenv("ALR_LH_AUTODISCOVER", "1") == "1"
-MAX_TOPICS = int(os.getenv("ALR_LH_MAX_TOPICS", "60"))   # now PER category
-MAX_PAGES = int(os.getenv("ALR_LH_MAX_PAGES", "12"))
-REQ_DELAY = float(os.getenv("ALR_LH_DELAY", "0.4"))   # politeness between topic fetches
+MAX_TOPICS = int(os.getenv("ALR_LH_MAX_TOPICS", "60"))   # PER category (caps bodies fetched)
+MAX_PAGES = int(os.getenv("ALR_LH_MAX_PAGES", "12"))     # PER category
 
 MAKES = {
     "acura","alfa-romeo","audi","bmw","buick","cadillac","chevrolet","chrysler",
@@ -95,62 +94,74 @@ def _clean_title(t: str) -> str:
 
 @adapter("leasehackr")
 class LeasehackrAdapter(BaseAdapter):
-    def fetch(self) -> Iterable[RawListing]:
-        cats = self._categories()
+    concurrency = LH_CONCURRENCY
+    max_retries = LH_RETRIES
+
+    async def fetch(self) -> list[RawListing]:
+        cats = await self._categories()
         print(f"[leasehackr] crawling {len(cats)} categor"
               f"{'y' if len(cats) == 1 else 'ies'}: {cats}")
+        out: list[RawListing] = []
         grand_seen = grand_emit = 0
         for cat in cats:
-            seen = emitted = page = 0
-            while emitted < MAX_TOPICS and page < MAX_PAGES:
-                topics = self._category_page(cat, page)
-                if not topics:        # error or past the last page
-                    break
-                seen += len(topics)
-                for t in topics:
-                    if emitted >= MAX_TOPICS:
-                        break
-                    cand = self._screen(t)
-                    if cand is None:
-                        continue
-                    body = self._body(cand["tid"])
-                    time.sleep(REQ_DELAY)
-                    if body is None:
-                        continue
-                    rl = self._parse(cand["tid"], cand["title"], cand["tags"],
-                                     cand["make"], cand["state"], body, t)
-                    if rl:
-                        emitted += 1
-                        yield rl
-                page += 1
+            cands, seen = await self._collect(cat)
+            # all topic-body fetches for this category run concurrently, bounded
+            # by the per-adapter semaphore inside aget_json.
+            results = await asyncio.gather(*(self._fetch_one(c, t) for c, t in cands))
+            rows = [r for r in results if r]
+            out.extend(rows)
             grand_seen += seen
-            grand_emit += emitted
-            print(f"[leasehackr]   {cat}: scanned {seen} across {page} page(s), "
-                  f"emitted {emitted}")
+            grand_emit += len(rows)
+            print(f"[leasehackr]   {cat}: scanned {seen}, candidates {len(cands)}, "
+                  f"emitted {len(rows)}")
         print(f"[leasehackr] scanned {grand_seen} topics, emitted {grand_emit} "
               f"rankable listings across {len(cats)} categories")
+        return out
+
+    async def _collect(self, cat: str) -> tuple[list, int]:
+        """Fetch a category's pages concurrently, screen topics, and return up to
+        MAX_TOPICS (candidate, topic) pairs plus the total topics scanned."""
+        pages = await asyncio.gather(
+            *(self._category_page(cat, p) for p in range(MAX_PAGES)))
+        cands, seen = [], 0
+        for topics in pages:
+            if not topics:
+                continue
+            seen += len(topics)
+            for t in topics:
+                cand = self._screen(t)
+                if cand:
+                    cands.append((cand, t))
+        return cands[:MAX_TOPICS], seen
+
+    async def _fetch_one(self, cand: dict, topic: dict):
+        body = await self._body(cand["tid"])
+        if body is None:
+            return None
+        return self._parse(cand["tid"], cand["title"], cand["tags"],
+                           cand["make"], cand["state"], body, topic)
 
     # ---- category selection -------------------------------------------------
-    def _categories(self) -> list[str]:
+    async def _categories(self) -> list[str]:
         """Explicit ALR_LH_CATEGORY list wins; otherwise private-transfers plus
         autodiscovered regional marketplace boards."""
         if _ENV_CATS:
             return _ENV_CATS
         if AUTODISCOVER:
-            return self._resolve_categories(DEFAULT_CATEGORY)
+            return await self._resolve_categories(DEFAULT_CATEGORY)
         return [DEFAULT_CATEGORY]
 
-    def _resolve_categories(self, default: str) -> list[str]:
+    async def _resolve_categories(self, default: str) -> list[str]:
         """Read the live category tree and build paths for private-transfers and
         every subcategory under a 'Marketplace' parent. Avoids hardcoding ids
         that drift. Falls back to `default` on any failure."""
         try:
-            r = self.client.get(f"{BASE}/categories.json?include_subcategories=true")
-            r.raise_for_status()
-            cats = r.json().get("category_list", {}).get("categories", [])
+            data = await self.aget_json(f"{BASE}/categories.json",
+                                        params={"include_subcategories": "true"})
         except Exception as e:
             print(f"[leasehackr] category autodiscovery failed ({e}); using default")
             return [default]
+        cats = data.get("category_list", {}).get("categories", [])
         found: list[str] = []
         for c in cats:
             slug = c.get("slug") or ""
@@ -170,14 +181,13 @@ class LeasehackrAdapter(BaseAdapter):
         return ordered or [default]
 
     # ---- per-category page + per-topic screen -------------------------------
-    def _category_page(self, cat: str, page: int) -> list | None:
+    async def _category_page(self, cat: str, page: int) -> list:
         try:
-            r = self.client.get(f"{BASE}/{cat}.json?page={page}")
-            r.raise_for_status()
-            return r.json().get("topic_list", {}).get("topics", [])
+            data = await self.aget_json(f"{BASE}/{cat}.json", params={"page": page})
         except Exception as e:
             print(f"[leasehackr] {cat} page {page} failed: {e}")
-            return None
+            return []
+        return data.get("topic_list", {}).get("topics", [])
 
     @staticmethod
     def _screen(t: dict) -> dict | None:
@@ -193,11 +203,10 @@ class LeasehackrAdapter(BaseAdapter):
         state = next((tg.upper() for tg in tags if tg in STATES), None)
         return {"tid": tid, "title": title, "tags": tags, "make": make, "state": state}
 
-    def _body(self, tid):
+    async def _body(self, tid):
         try:
-            r = self.client.get(f"{BASE}/t/{tid}.json")
-            r.raise_for_status()
-            cooked = r.json()["post_stream"]["posts"][0].get("cooked", "")
+            data = await self.aget_json(f"{BASE}/t/{tid}.json")
+            cooked = data["post_stream"]["posts"][0].get("cooked", "")
             return re.sub(r"<[^>]+>", " ", cooked)
         except Exception as e:
             print(f"[leasehackr] topic {tid} body failed: {e}")

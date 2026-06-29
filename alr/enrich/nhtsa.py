@@ -9,12 +9,25 @@
 """
 from __future__ import annotations
 
-import httpx
+import asyncio
 
-from ..config import HTTP_TIMEOUT, USER_AGENT, VPIC_BASE, VPIC_BATCH_SIZE
+import httpx
+from tenacity import (AsyncRetrying, retry_if_exception, stop_after_attempt,
+                      wait_exponential)
+
+from ..config import (HTTP_TIMEOUT, USER_AGENT, VPIC_BASE, VPIC_BATCH_SIZE,
+                      VPIC_CONCURRENCY)
 from ..schema import NormalizedListing
 from ..seed import CATALOG
 from ..store import db as _db
+
+_VPIC_RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def _vpic_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _VPIC_RETRY_STATUS
+    return isinstance(exc, (httpx.TransportError, httpx.TimeoutException))
 
 # make -> luxury flag (cheap heuristic; refine as needed)
 LUXURY_MAKES = {"BMW", "Audi", "Mercedes", "Genesis", "Lexus", "Porsche", "Volvo", "Acura"}
@@ -60,33 +73,47 @@ def decode_vin(vin: str, client: httpx.Client) -> dict:
         return {}
 
 
-def decode_vins_batch(vins_with_years: list[tuple[str, int | None]],
-                      client: httpx.Client,
-                      chunk: int = VPIC_BATCH_SIZE) -> dict[str, dict]:
-    """Decode many VINs via vPIC DecodeVINValuesBatch (<=50/call, form POST).
+async def decode_vins_batch(vins_with_years: list[tuple[str, int | None]],
+                            client: httpx.AsyncClient,
+                            chunk: int = VPIC_BATCH_SIZE,
+                            concurrency: int = VPIC_CONCURRENCY) -> dict[str, dict]:
+    """Decode many VINs via vPIC DecodeVINValuesBatch (<=50/call, form POST),
+    several batches concurrently (bounded by `concurrency`), with retry/backoff.
 
     Returns {VIN_UPPER: {body, hp, ev, awd}}. Results are matched by the echoed
     `VIN` field, not array position (vPIC may reorder / drop rows). Failed
     batches are logged and skipped, never raised."""
-    out: dict[str, dict] = {}
-    for i in range(0, len(vins_with_years), chunk):
-        batch = vins_with_years[i:i + chunk]
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _one(batch: list[tuple[str, int | None]]) -> dict[str, dict]:
         # vPIC batch format: "VIN,modelyear;VIN,modelyear;..." (comma splits VIN
         # from the optional year, semicolon splits records).
         payload = ";".join(f"{vin},{year}" if year else vin for vin, year in batch)
-        try:
-            r = client.post(f"{VPIC_BASE}/vehicles/DecodeVINValuesBatch/",
-                            data={"format": "json", "data": payload})
-            r.raise_for_status()
-            results = r.json().get("Results", [])
-        except Exception as e:
-            print(f"[vpic] batch of {len(batch)} VINs failed: {e}")
-            continue
-        for res in results:
-            vin = (res.get("VIN") or "").upper()
-            if vin:
-                out[vin] = _parse_vpic(res)
-    return out
+        async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=0.5, max=8),
+                retry=retry_if_exception(_vpic_retryable), reraise=True):
+            with attempt:
+                async with sem:
+                    r = await client.post(
+                        f"{VPIC_BASE}/vehicles/DecodeVINValuesBatch/",
+                        data={"format": "json", "data": payload})
+                    r.raise_for_status()
+                    results = r.json().get("Results", [])
+                return {v.upper(): _parse_vpic(res) for res in results
+                        if (v := (res.get("VIN") or ""))}
+        return {}
+
+    batches = [vins_with_years[i:i + chunk]
+               for i in range(0, len(vins_with_years), chunk)]
+    merged: dict[str, dict] = {}
+    for part in await asyncio.gather(*(_one(b) for b in batches),
+                                     return_exceptions=True):
+        if isinstance(part, dict):
+            merged.update(part)
+        else:
+            print(f"[vpic] batch failed after retries: {part}")
+    return merged
 
 
 def _apply_catalog(l: NormalizedListing) -> None:
@@ -145,9 +172,9 @@ def enrich(listing: NormalizedListing, client: httpx.Client | None = None) -> No
     return listing
 
 
-def enrich_all(listings: list[NormalizedListing],
-               client: httpx.Client | None = None,
-               con=None) -> list[NormalizedListing]:
+async def enrich_all(listings: list[NormalizedListing],
+                     client: httpx.AsyncClient | None = None,
+                     con=None) -> list[NormalizedListing]:
     """Two-phase enrichment over the whole snapshot, precedence
     adapter -> vPIC -> catalog:
       1. for real-VIN listings still missing hp: read the DuckDB vin_cache, batch
@@ -165,7 +192,7 @@ def enrich_all(listings: list[NormalizedListing],
         decoded: dict[str, dict] = {}
         if client and miss:
             pairs = [(l.vin, l.__dict__.get("_year")) for l in miss]
-            decoded = decode_vins_batch(pairs, client)
+            decoded = await decode_vins_batch(pairs, client)
             _db.vin_cache_put(con, decoded)
         table = {**cached, **decoded}
         for l in need:
