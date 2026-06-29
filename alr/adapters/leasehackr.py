@@ -40,8 +40,8 @@ DEFAULT_CATEGORY = "c/private-transfers/12"
 # yield ~0 transfers (they fail the deal-sheet gate), so it's off by default.
 _ENV_CATS = [c.strip() for c in os.getenv("ALR_LH_CATEGORY", "").split(",") if c.strip()]
 AUTODISCOVER = os.getenv("ALR_LH_AUTODISCOVER", "0") == "1"
-MAX_TOPICS = int(os.getenv("ALR_LH_MAX_TOPICS", "60"))   # PER category (caps bodies fetched)
-MAX_PAGES = int(os.getenv("ALR_LH_MAX_PAGES", "12"))     # PER category
+MAX_TOPICS = int(os.getenv("ALR_LH_MAX_TOPICS", "400"))  # PER category (caps bodies fetched)
+MAX_PAGES = int(os.getenv("ALR_LH_MAX_PAGES", "20"))     # PER category
 
 MAKES = {
     "acura","alfa-romeo","audi","bmw","buick","cadillac","chevrolet","chrysler",
